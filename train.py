@@ -32,6 +32,7 @@ import utils.profile
 from utils.hparams import LinearDynamicParam
 import utils.figures
 import utils.exception
+from tqdm import tqdm
 
 
 def train_config():
@@ -51,7 +52,7 @@ def train_config():
 
 
     # ========== Logger init (required to load from checkpoint) and Config check ==========
-    root_path = Path(__file__).resolve().parent
+    root_path = Path(config.model.logs_root_dir)
     logger = logs.logger.RunLogger(root_path, config.model, config.train)
     if logger.restart_from_checkpoint:
         model.build.check_configs_on_resume_from_checkpoint(config.model, config.train,
@@ -185,7 +186,7 @@ def train_config():
 
 
     # ========== Model training epochs ==========
-    for epoch in range(config.train.start_epoch, config.train.n_epochs):
+    for epoch in tqdm(range(config.train.start_epoch, config.train.n_epochs), desc='epoch', position=0):
         # = = = = = Re-init of epoch metrics and useful scalars (warmup ramps, ...) = = = = =
         for _, s in scalars.items():
             s.on_new_epoch()
@@ -201,7 +202,7 @@ def train_config():
         with utils.profile.get_optional_profiler(config.train.profiler_args) as prof:
             ae_model_parallel.train()
             dataloader_iter = iter(dataloader['train'])
-            for i in range(len(dataloader['train'])):
+            for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
                 with profiler.record_function("DATA_LOAD") if is_profiled else contextlib.nullcontext():
                     sample = next(dataloader_iter)
                     x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
@@ -246,7 +247,6 @@ def train_config():
                     (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
                 with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
                     optimizer.step()  # Internal params. update; before scheduler step
-                logger.on_minibatch_finished(i)
                 # For full-trace profiling: we need to stop after a few mini-batches
                 if config.train.profiler_full_trace and i == 2:
                     break
@@ -261,7 +261,7 @@ def train_config():
         with torch.no_grad():
             ae_model_parallel.eval()  # BN stops running estimates
             v_error = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
-            for i, sample in enumerate(dataloader['validation']):
+            for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
                 x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
                 z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out

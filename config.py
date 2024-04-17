@@ -17,13 +17,13 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = "FlVAE2"
-model.run_name = '00_debug'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = "FlMLP"
+model.run_name = 'default'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1_bn'
-# Possible values: 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
-model.params_regression_architecture = 'flow_realnvp_6l300'
+# Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
+model.params_regression_architecture = 'mlp_4l1024'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
@@ -32,8 +32,8 @@ model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO implement
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
-model.midi_notes = ((60, 85), )  # Reference note
-# model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+# model.midi_notes = ((60, 85), )  # Reference note
+model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
 model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
@@ -72,7 +72,8 @@ model.dataset_labels = None  # tuple of labels (e.g. ('harmonic', 'percussive'))
 # Other synth: ...?
 model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # Directory for saving metrics, samples, models, etc... see README.md
-model.logs_root_dir = "saved"  # Path from this directory
+model.logs_root_dir = "/exp_logs/preset-gen-vae"  # Path from this directory
+model.dataset_dir = "/dataset/preset-gen-vae/numcatpp"
 
 
 train = _Config()
@@ -85,7 +86,7 @@ train.current_k_fold = 0
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
-train.save_period = 50  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
+train.save_period = 20  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
 train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 train.latent_loss = 'Dkl'  # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
@@ -128,7 +129,7 @@ train.scheduler_threshold = 1e-4
 # Training considered "dead" when dynamic LR reaches this value
 train.early_stop_lr_threshold = None  # See update_dynamic_config_params()
 
-train.verbosity = 1  # 0: no console output --> 3: fully-detailed per-batch console output
+train.verbosity = 3  # 0: no console output --> 3: fully-detailed per-batch console output
 train.init_security_pause = 0.0  # Short pause before erasing an existing run
 # Number of logged audio and spectrograms for a given epoch
 train.logged_samples_count = 4  # See update_dynamic_config_params()

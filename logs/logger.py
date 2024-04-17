@@ -23,14 +23,13 @@ _erase_security_time_s = 5.0
 def get_model_run_directory(root_path, model_config):
     """ Returns the directory where saved models and config.json are stored, for a particular run.
     Does not check whether the directory exists or not (it must have been created by the RunLogger) """
-    return root_path.joinpath(model_config.logs_root_dir)\
-        .joinpath(model_config.name).joinpath(model_config.run_name)
+    return root_path.joinpath(model_config.name).joinpath(model_config.run_name)
 
 
 def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=None):
     """ Returns the path to a .tar saved checkpoint, or prints all available checkpoints and raises an exception
     if the required epoch has no saved .tar checkpoint. """
-    checkpoints_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
+    checkpoints_dir = root_path.joinpath(model_config.name)\
         .joinpath(model_config.run_name).joinpath('checkpoints')
     checkpoint_path = checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
     try:
@@ -46,7 +45,7 @@ def get_model_checkpoint(root_path: pathlib.Path, model_config, epoch, device=No
 
 
 def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=True, device=None):
-    checkpoints_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)\
+    checkpoints_dir = root_path.joinpath(model_config.name)\
         .joinpath(model_config.run_name).joinpath('checkpoints')
     available_epochs = [int(f.stem) for f in checkpoints_dir.glob('*.tar')]
     assert len(available_epochs) > 0  # At least 1 checkpoint should be available
@@ -58,7 +57,7 @@ def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=Tru
 def get_tensorboard_run_directory(root_path, model_config):
     """ Returns the directory where Tensorboard model metrics are stored, for a particular run. """
     # pb s'il y en a plusieurs ? (semble résolu avec override de add_hparam PyTorch)
-    return root_path.joinpath(model_config.logs_root_dir).joinpath('runs')\
+    return root_path.joinpath.joinpath('runs')\
         .joinpath(model_config.name).joinpath(model_config.run_name)
 
 
@@ -101,10 +100,9 @@ class RunLogger:
         assert train_config.start_epoch >= 0  # Cannot start from a negative epoch
         self.restart_from_checkpoint = (train_config.start_epoch > 0)
         # - - - - - Directories creation (if not exists) for model - - - - -
-        self.log_dir = root_path.joinpath(model_config.logs_root_dir).joinpath(model_config.name)
+        self.log_dir = root_path.joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.log_dir)
-        self.tensorboard_model_dir = root_path.joinpath(model_config.logs_root_dir)\
-            .joinpath('runs').joinpath(model_config.name)
+        self.tensorboard_model_dir = root_path.joinpath('runs').joinpath(model_config.name)
         self._make_dirs_if_dont_exist(self.tensorboard_model_dir)
         # - - - - - Run directories and data management - - - - -
         if self.train_config.verbosity >= 1:

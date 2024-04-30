@@ -17,23 +17,28 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = "FlMLP"
-model.run_name = 'default'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = 'CNNMLP_re'
+model.run_name = 'kfold1'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-model.encoder_architecture = 'speccnn8l1_bn'
-# Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_3l1024', ... (configurable numbers of layers and neurons)
+model.encoder_architecture = 'speccnn8l1_bn' # 'speccnn8l1_bn', 'seanet'
+# Default: Same with the encoder architecture. Set to None to disable the decoder and reconstruction loss.
+model.decoder_architecture = 'speccnn8l1_bn' # 'speccnn8l1_bn', 'seanet', None
+model.latent_quantization = None # 'rvq', None
+model.input_type = 'spectrogram' # 'waveform', 'spectrogram'
+model.stochastic_latent = True # True (VAE), False (deterministic AE)
+# Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_4l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'mlp_4l1024'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
 model.note_duration = (3.0, 1.0)
-model.sampling_rate = 22050
+model.sampling_rate = 22050 # 22050, 24000
 model.stft_args = (1024, 256)  # fft size and hop size
 model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO implement
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
-# model.midi_notes = ((60, 85), )  # Reference note
-model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
+model.midi_notes = ((60, 85), )  # Reference note
+# model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
 model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
 # If True, each preset is presented several times per epoch (nb of train epochs must be reduced) such that the
@@ -44,15 +49,16 @@ model.spectrogram_min_dB = -120.0
 #   (513, 433): audio 5.0s, fft size 1024, fft hop 256
 #   (257, 347): audio 4.0s, fft size 512 (or fft 1024 w/ mel_bins 257), fft hop 256
 model.spectrogram_size = (257, 347)  # see data/dataset.py to retrieve this from audio/stft params
+model.waveform_size = 88576 # 88576 (22050 Hz), 96256 (24000 Hz)
 model.input_tensor_size = None  # see update_dynamic_config_params()
 # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
 model.concat_midi_to_z = None  # See update_dynamic_config_params()
 # Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
-model.dim_z = 256  # Including possibly concatenated midi pitch and velocity
-# Latent flow architecture, e.g. 'realnvp_4l200' (4 flows, 200 hidden features per flow)
+model.dim_z = 610 # 610  # Including possibly concatenated midi pitch and velocity
+# Latent flow architecture, e.g. 'realnvp_6l300', 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
 #    - set to None to disable latent space flow transforms
-model.latent_flow_arch = 'realnvp_6l300'
+model.latent_flow_arch = None # 'realnvp_6l300', None
 # If True, loss compares v_out and v_in. If False, we will flow-invert v_in to get loss in the q_Z0 domain.
 # This option has implications on the regression model itself (the flow will be used in direct or inverse order)
 model.forward_controls_loss = True  # Must be true for non-invertible MLP regression
@@ -78,11 +84,11 @@ model.dataset_dir = "/dataset/preset-gen-vae/numcatpp"
 
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 160
+train.minibatch_size = 160 # 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
-train.current_k_fold = 0
+train.current_k_fold = 1 # 0, 1, 2, 3, 4
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
@@ -158,11 +164,14 @@ def update_dynamic_config_params():
     model.increased_dataset_size = (len(model.midi_notes) > 1) and not model.stack_spectrograms
     model.concat_midi_to_z = (len(model.midi_notes) > 1) and not model.stack_spectrograms
     # Mini-batch size can be smaller for the last mini-batches and/or during evaluation
-    model.input_tensor_size = (train.minibatch_size, 1 if not model.stack_spectrograms else len(model.midi_notes),
+    if model.input_type == 'spectrogram':
+        model.input_tensor_size = (train.minibatch_size, 1 if not model.stack_spectrograms else len(model.midi_notes),
                                model.spectrogram_size[0], model.spectrogram_size[1])
+    else:
+        model.input_tensor_size = (train.minibatch_size, 1, model.waveform_size)
 
     # Dynamic train hyper-params
-    train.early_stop_lr_threshold = train.initial_learning_rate * 1e-3
+    train.early_stop_lr_threshold = 0 # train.initial_learning_rate * 1e-3
     train.logged_samples_count = max(train.logged_samples_count, len(model.midi_notes))
     # Train hyper-params (epochs counts) that should be increased when using a subset of the dataset
     if model.dataset_synth_args[0] is not None:  # Limited Dexed algorithms?  TODO handle non-dexed synth

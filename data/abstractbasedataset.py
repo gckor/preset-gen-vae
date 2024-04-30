@@ -9,6 +9,7 @@ import pandas as pd
 import json
 from datetime import datetime
 import multiprocessing
+from tqdm import tqdm
 
 import torch
 import torch.utils
@@ -29,7 +30,9 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
                  multichannel_stacked_spectrograms=False,
                  n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
                  normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
-                 learn_mod_wheel_params=False
+                 learn_mod_wheel_params=False,
+                 dataset_dir=None,
+                 sample_rate=22050
                  ):
         """
         Abstract Base Class for any synthesizer presets dataset.
@@ -69,12 +72,16 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         # - - - Spectrogram utility class - - -
         if self.n_mel_bins <= 0:
             self.spectrogram = utils.audio.Spectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB)
-        else:  # TODO do not hardcode Fs?
+        else:
             self.spectrogram = utils.audio.MelSpectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB,
-                                                          self.n_mel_bins, 22050)
+                                                          self.n_mel_bins, sample_rate)
         # spectrogram min/max/mean/std statistics: must be loaded after super() ctor (depend on child class args)
         self.spectrogram_normalization = spectrogram_normalization
         self.spec_stats = None
+        self.sample_rate = sample_rate
+        self.dataset_dir = pathlib.Path(dataset_dir)
+        self.wav_files_dir = self.dataset_dir.joinpath('wav')
+        self.spec_files_dir = self.dataset_dir.joinpath('spectrogram')
 
     @property
     @abstractmethod
@@ -106,43 +113,25 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
 
         If this dataset generates audio directly from the synth, only 1 dataloader is allowed.
         A 30000 presets dataset require approx. 7 minutes to be generated on 1 CPU. """
-        # TODO on-the-fly audio generation. We should try:
-        #  - Use shell command to run a dedicated script. The script writes AUDIO_SAMPLE_TEMP_ID.wav
-        #  - wait for the file to be generated on disk (or for the command to notify... something)
-        #  - read and delete this .wav file
-        # If several notes available but single-spectrogram output: we have to convert i into a UID and a note index
         if self.midi_notes_per_preset > 1 and not self._multichannel_stacked_spectrograms:
             preset_index = i // self.midi_notes_per_preset
             midi_note_indexes = [i % self.midi_notes_per_preset]
         else:
             preset_index = i
             midi_note_indexes = range(self.midi_notes_per_preset)
-        # Load params and a list of spectrograms (1-element list is fine). 1 spectrogram per MIDI
-        preset_UID = self.valid_preset_UIDs[preset_index]
-        preset_params = self.get_full_preset_params(preset_UID)
-        spectrograms = list()
-        for midi_note_idx in midi_note_indexes:
-            midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
-            x_wav, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
-            # Spectrogram, or Mel-Spectrogram if requested (see self.spectrogram ctor arguments)
-            spectrogram = self.spectrogram(x_wav)
-            if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
-                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
-                              / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
-            elif self.spectrogram_normalization == 'mean_std':
-                spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
-            spectrograms.append(spectrogram)
-        # Tuple output. Warning: torch.from_numpy does not copy values (torch.tensor(...) ctor does)
-        # FIXME the MIDI pitch and velocity should be a separate tensor, for multi-layer spectrogram
-        #   but this will break compatibility with much code and many notebooks
+        
         if len(midi_note_indexes) == 1:
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
         else:
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
-        return torch.stack(spectrograms), \
-            torch.squeeze(preset_params.get_learnable(), 0), \
-            torch.tensor([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=torch.int32), \
-            self.get_labels_tensor(preset_UID)
+
+        preset_UID = self.valid_preset_UIDs[preset_index]
+        waveform, spectrogram, synth_param, sample_info, label = self.get_data_from_file(preset_UID, ref_midi_pitch, ref_midi_velocity)
+        return torch.FloatTensor(waveform).unsqueeze(0), \
+            torch.tensor(spectrogram), \
+            torch.tensor(synth_param), \
+            torch.tensor(sample_info), \
+            torch.tensor(label)
 
     @property
     @abstractmethod
@@ -227,7 +216,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
     def learnable_params_tensor_length(self):
         """ Length of a learnable parameters tensor (contains single-element numerical values and one-hot encoded
         categorical params). """
-        _, params, _, _ = self.__getitem__(0)
+        _, _, params, _, _ = self.__getitem__(0)
         return params.shape[0]
 
     @property
@@ -298,6 +287,18 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
     def get_wav_file(self, preset_UID, midi_note, midi_velocity):
         pass
 
+    @abstractmethod
+    def get_spec_file(self, preset_UID, midi_note, midi_velocity):
+        pass
+    
+    @abstractmethod
+    def get_spec_file_path(self, preset_UID, midi_note, midi_velocity):
+        pass
+    
+    @abstractmethod
+    def get_data_from_file(self, preset_UID, midi_pitch, midi_velocity):
+        pass
+
     def _get_wav_file(self, preset_UID):
         """ Returns the preset_UID audio (numpy array). MIDI note and velocity of the note are the class defaults. """
         # FIXME incompatible with future multi-MIDI notes input
@@ -351,6 +352,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         and dataset-wide averaged results are stored into a .json file
         This functions must be re-run when spectrogram parameters are changed. """
         t_start = datetime.now()
+        os.makedirs(self.spec_files_dir, exist_ok=True)
         # MKL and/or PyTorch do not use hyper-threading, and it gives better results... don't use multi-proc here
         workers_args = self._get_multi_note_workers_args(num_workers=1)
         full_stats = self._compute_spectrogram_stats_batch(workers_args[0])
@@ -369,7 +371,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         with open(self._get_spectrogram_stats_file(), 'w') as f:
             json.dump(dataset_stats, f)
         delta_t = (datetime.now() - t_start).total_seconds()
-        print("Results from {} spectrograms written to {} _full.csv and .json files ({:.1f} minutes total)"
+        print("Results from {} spectrograms written to {} .pt, _full.csv and .json files ({:.1f} minutes total)"
               .format(len(full_stats), self._get_spectrogram_stats_file_stem(), delta_t/60.0))
 
     def _compute_spectrogram_stats_batch(self, worker_args):
@@ -378,9 +380,8 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         full_stats = {'UID': np.zeros((len(worker_args),), dtype=np.int),
                       'min': np.zeros((len(worker_args),)), 'max': np.zeros((len(worker_args),)),
                       'mean': np.zeros((len(worker_args),)), 'var': np.zeros((len(worker_args),))}
-        for i, (preset_UID, midi_pitch, midi_velocity) in enumerate(worker_args):
+        for i, (preset_UID, midi_pitch, midi_velocity) in tqdm(enumerate(worker_args), total=len(worker_args)):
             x_wav, Fs = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
-            assert Fs == 22050
             # We use the exact same spectrogram as the dataloader will
             tensor_spectrogram = self.spectrogram(x_wav)
             full_stats['UID'][i] = preset_UID
@@ -388,6 +389,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             full_stats['max'][i] = torch.max(tensor_spectrogram).item()
             full_stats['var'][i] = torch.var(tensor_spectrogram).item()
             full_stats['mean'][i] = torch.mean(tensor_spectrogram, dim=(0, 1)).item()
+            torch.save(tensor_spectrogram, self.get_spec_file_path(preset_UID, midi_pitch, midi_velocity))
         return full_stats
 
     def _get_multi_note_workers_args(self, num_workers):

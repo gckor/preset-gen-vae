@@ -24,7 +24,8 @@ def get_dataset(model_config, train_config):
                                             operators=model_config.dataset_synth_args[1],
                                             vst_params_learned_as_categorical=
                                             model_config.synth_vst_params_learned_as_categorical,
-                                            restrict_to_labels=model_config.dataset_labels)
+                                            restrict_to_labels=model_config.dataset_labels,
+                                            dataset_dir=model_config.dataset_dir)
     else:
         raise NotImplementedError("No dataset available for '{}': unrecognized synth.".format(model_config.synth))
     if train_config.verbosity >= 2:
@@ -53,7 +54,8 @@ def get_split_dataloaders(train_config, full_dataset, persistent_workers=True):
         num_workers = 0  # PyCharm debug behaves badly with multiprocessing...
     else:  # We should use an higher CPU count for real-time audio rendering
         # 4*GPU count: optimal w/ light dataloader (e.g. (mel-)spectrogram computation)
-        num_workers = min(train_config.minibatch_size, torch.cuda.device_count() * 4)
+        # num_workers = min(train_config.minibatch_size, 4 * torch.cuda.device_count())
+        num_workers = 0
     # Dataloader easily build from samplers
     subset_samplers = data.sampler.build_subset_samplers(full_dataset, k_fold=train_config.current_k_fold,
                                                          k_folds_count=train_config.k_folds,

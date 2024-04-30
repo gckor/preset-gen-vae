@@ -7,6 +7,7 @@ See end of file.
 import os
 import pathlib
 import json
+import h5py
 from typing import Optional, Iterable
 import multiprocessing
 from datetime import datetime
@@ -35,7 +36,9 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                  restrict_to_labels=None, constant_filter_and_tune_params=True,
                  prevent_SH_LFO=False,  # TODO re-implement
                  learn_mod_wheel_params=True,
-                 check_constrains_consistency=True
+                 check_constrains_consistency=True,
+                 dataset_dir=None,
+                 sample_rate=22050,
                  ):
         """
         Allows access to Dexed preset values and names, and generates spectrograms and corresponding
@@ -60,7 +63,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         """
         super().__init__(note_duration, n_fft, fft_hop, midi_notes, multichannel_stacked_spectrograms,
                          n_mel_bins, mel_fmin, mel_fmax,
-                         normalize_audio, spectrogram_min_dB, spectrogram_normalization, learn_mod_wheel_params)
+                         normalize_audio, spectrogram_min_dB, spectrogram_normalization, learn_mod_wheel_params,
+                         dataset_dir, sample_rate)
         assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params
         self.prevent_SH_LFO = prevent_SH_LFO
         assert prevent_SH_LFO is False  # TODO re-implement S&H enable/disable
@@ -243,7 +247,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def _render_audio(self, preset_params: Iterable, midi_note, midi_velocity):
         # reload the VST to prevent hanging notes/sounds
         dexed_renderer = dexed.Dexed(midi_note_duration_s=self.note_duration[0],
-                                     render_duration_s=self.note_duration[0] + self.note_duration[1])
+                                     render_duration_s=self.note_duration[0] + self.note_duration[1],
+                                     sample_rate=self.sample_rate)
         dexed_renderer.assign_preset(dexed.PresetDatabase.get_params_in_plugin_format(preset_params))
         x_wav = dexed_renderer.render_note(midi_note, midi_velocity, normalize=self.normalize_audio)
         return x_wav, dexed_renderer.Fs
@@ -260,12 +265,71 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             ops_suffix = '_op' + ''.join(['{}'.format(op) for op in self._operators])
         return ops_suffix
 
+    def generate_data(self, idx):
+        if self.midi_notes_per_preset > 1 and not self._multichannel_stacked_spectrograms:
+            preset_index = idx // self.midi_notes_per_preset
+            midi_note_indexes = [i % self.midi_notes_per_preset]
+        else:
+            preset_index = idx
+            midi_note_indexes = range(self.midi_notes_per_preset)
+
+        if len(midi_note_indexes) == 1:
+            ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
+        else:
+            ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
+
+        preset_UID = self.valid_preset_UIDs[preset_index]
+        preset_params = self.get_full_preset_params(preset_UID)
+        spectrograms = list()
+
+        for midi_note_idx in midi_note_indexes:
+            midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
+            waveform, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
+            spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
+
+            if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
+                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
+                            / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
+            elif self.spectrogram_normalization == 'mean_std':
+                spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
+
+            spectrograms.append(spectrogram)     
+
+        return waveform.astype(np.float32), \
+            torch.stack(spectrograms).squeeze().numpy(), \
+            preset_params.get_learnable().squeeze().numpy(), \
+            np.array([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=np.int32), \
+            self.get_labels_tensor(preset_UID).numpy()
+    
+    def get_data_from_file(self, preset_UID, midi_pitch, midi_velocity):
+        with h5py.File(self.dataset_dir.joinpath('dataset.h5py'), 'r') as f:
+            data = f[f'{preset_UID:06d}_{midi_pitch}_{midi_velocity}']
+            waveform = data['waveform'][:]
+            spectrogram = data['spectrogram'][:]
+            synth_param = data['synth_param'][:]
+            sample_info = data['sample_info'][:]
+            label = data['label'][:]
+        return waveform, spectrogram, synth_param, sample_info, label
+    
+    def get_spec_file_path(self, preset_UID, midi_note, midi_velocity):
+        """ Returns the path of a spectrogram (from dexed_presets folder). Operators"""
+        filename = "preset{:06d}_midi{:03d}vel{:03d}{}.pt".format(preset_UID, midi_note, midi_velocity,
+                                                                   self._operators_suffix)
+        return self.spec_files_dir.joinpath(filename)
+
+    def get_spec_file(self, preset_UID, midi_note, midi_velocity):
+        file_path = self.get_spec_file_path(preset_UID, midi_note, midi_velocity)
+        try:
+            return torch.load(file_path)
+        except RuntimeError:
+            raise RuntimeError("[data/dataset.py] Can't open file {}. Please pre-render spectrogram files for this "
+                               "dataset configuration.".format(file_path))
+
     def get_wav_file_path(self, preset_UID, midi_note, midi_velocity):
         """ Returns the path of a wav (from dexed_presets folder). Operators"""
-        presets_folder = dexed.PresetDatabase._get_presets_folder()
         filename = "preset{:06d}_midi{:03d}vel{:03d}{}.wav".format(preset_UID, midi_note, midi_velocity,
                                                                    self._operators_suffix)
-        return presets_folder.joinpath(filename)
+        return self.wav_files_dir.joinpath(filename)
 
     def get_wav_file(self, preset_UID, midi_note, midi_velocity):
         file_path = self.get_wav_file_path(preset_UID, midi_note, midi_velocity)
@@ -285,6 +349,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
          Also writes a audio_render_constraints.json file that should be checked when loading data.
          """
         t_start = datetime.now()
+        os.makedirs(self.wav_files_dir, exist_ok=True)
         # TODO multiple midi notes generation
         num_workers = os.cpu_count()
         workers_args = self._get_multi_note_workers_args(num_workers)
@@ -335,6 +400,10 @@ if __name__ == "__main__":
     sys.path.append(pathlib.Path(__file__).parent.parent)
     import config  # Dirty path trick to import config.py from project root dir
 
+    # xvfb display activation via pyvirtualdisplay wrapper
+    from pyvirtualdisplay import Display
+    disp = Display().start()
+
     # ============== DATA RE-GENERATION - FROM config.py ==================
     regenerate_wav = True  # multi-notes: a few minutes on a powerful CPU (20+ cores) - else: much longer
     # WARNING: when computing stats, please make sure that *all* midi notes are available
@@ -360,7 +429,9 @@ if __name__ == "__main__":
                                  vst_params_learned_as_categorical=config.model.synth_vst_params_learned_as_categorical,
                                  restrict_to_labels=None,
                                  spectrogram_min_dB=config.model.spectrogram_min_dB,
-                                 check_constrains_consistency=False)
+                                 check_constrains_consistency=False,
+                                 dataset_dir=config.model.dataset_dir,
+                                 sample_rate=config.model.sampling_rate)
     print(dexed_dataset.preset_indexes_helper)
     if not regenerate_wav and not regenerate_spectrograms_stats:
         print(dexed_dataset)  # All files must be pre-rendered before printing
@@ -374,6 +445,9 @@ if __name__ == "__main__":
         # whole-dataset stats (for proper normalization)
         dexed_dataset.compute_and_store_spectrograms_stats()
     # ============== DATA RE-GENERATION - FROM config.py ==================
+
+    # xvfb display deactivation
+    disp.stop()
 
 
     # Dataloader debug tests

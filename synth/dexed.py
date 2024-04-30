@@ -217,7 +217,7 @@ class PresetDatabase:
 class Dexed:
     """ A Dexed (DX7) synth that can be used through RenderMan for offline wav rendering. """
 
-    def __init__(self, plugin_path="/home/gwendal/Jupyter/AudioPlugins/Dexed.so",
+    def __init__(self, plugin_path="/root/dexed/Builds/Linux/build/Dexed.so",
                  midi_note_duration_s=3.0, render_duration_s=4.0,
                  sample_rate=22050,  # librosa default sr
                  buffer_size=512, fft_size=512,

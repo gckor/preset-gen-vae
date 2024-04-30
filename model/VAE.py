@@ -16,17 +16,70 @@ import model.loss
 from utils.probability import gaussian_log_probability, standard_gaussian_log_probability
 
 
+class DeterministicAE(nn.Module):
+    def __init__(self, encoder, dim_z, decoder, quantizer=None, context_model=None, concat_midi_to_z=False, frame_rate=None, freeze=False):
+        super().__init__()
+        self.encoder = encoder
+        self.dim_z = dim_z
+        self.decoder = decoder
+        self.quantizer = quantizer
+        self.context_model = context_model
+        self.concat_midi_to_z = concat_midi_to_z
+        self.frame_rate = frame_rate
+        self.freeze = freeze
+        
+    def forward(self, x, sample_info=None):
+        n_minibatch = x.size()[0]
+        z = torch.empty((n_minibatch, self.dim_z), device=x.device, requires_grad=False)
+
+        if self.freeze:
+            self.encoder.eval()
+            self.quantizer.eval()
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+            for param in self.quantizer.parameters():
+                param.requires_grad = False
+
+        if not self.concat_midi_to_z:
+            z = self.encoder(x)
+        else:
+            z[:, 2:] = self.encoder(x)
+            if sample_info is None:  # missing MIDI notes are tolerated for graphs and summaries
+                z[:, [0, 1]] = 0.0
+            else:  # MIDI pitch and velocity models: free-mean and unit-variance scaled in [-1.0, 1.0]
+                # TODO extend this to work with multiple MIDI notes?
+                # Mean is simply scaled to [-1.0, 1.0] (min/max normalization)
+                midi_pitch_and_vel = - 1.0 + 2.0 * sample_info[:, [1, 2]].float() / 127.0
+                z[:, [0, 1]] = midi_pitch_and_vel
+
+        if self.quantizer is not None:
+            z = self.quantizer(z, self.frame_rate)
+            z = z.reshape(n_minibatch, -1)
+            
+        if self.decoder is not None:
+            x_out = self.decoder(z)
+        else:
+            x_out = None
+
+        if self.context_model is not None:
+            z_context = self.context_model(z)
+        else:
+            z_context = z
+
+        return z_context, x_out
+
 class BasicVAE(nn.Module):
     """ A standard VAE that uses some given encoder and decoder networks.
      The latent probability distribution is modeled as dim_z independent Gaussian distributions. """
 
-    def __init__(self, encoder, dim_z, decoder, normalize_latent_loss, latent_loss_type):
+    def __init__(self, encoder, dim_z, decoder, normalize_latent_loss, latent_loss_type, concat_midi_to_z=False):
         # FIXME not able to concat MIDI notes into latent vector (or maybe deprecate this whole class)
         super().__init__()
         # No size checks performed. Encoder and decoder must have been properly designed
         self.encoder = encoder
         self.dim_z = dim_z
         self.decoder = decoder
+        self.concat_midi_to_z = concat_midi_to_z
         self.is_profiled = False
         if latent_loss_type.lower() == 'dkl':
             # TODO try don't normalize (if reconstruction loss is not normalized either)
@@ -34,7 +87,7 @@ class BasicVAE(nn.Module):
         else:
             raise NotImplementedError("Latent loss '{}' unavailable".format(latent_loss_type))
 
-    def forward(self, x):
+    def forward(self, x, sample_info=None):
         """ Encodes the given input into a q_phi(z|x) probability distribution,
         samples a latent vector from that distribution, and finally calls the decoder network.
 
@@ -43,8 +96,23 @@ class BasicVAE(nn.Module):
 
         :returns: z_mu_logvar, z_sampled, zK_sampled=z_sampled, logabsdetjacT=0.0, x_out (reconstructed spectrogram)
         """
+        n_minibatch = x.size()[0]
         with profiler.record_function("ENCODING") if self.is_profiled else contextlib.nullcontext():
-            z_mu_logvar = self.encoder(x)
+            # Don't ask for requires_grad or this tensor becomes a leaf variable (it will require grad later)
+            z_mu_logvar = torch.empty((n_minibatch, 2, self.dim_z), device=x.device, requires_grad=False)
+            if not self.concat_midi_to_z:
+                z_mu_logvar = self.encoder(x)
+            else:
+                z_mu_logvar[:, :, 2:] = self.encoder(x)
+                if sample_info is None:  # missing MIDI notes are tolerated for graphs and summaries
+                    z_mu_logvar[:, :, [0, 1]] = 0.0
+                else:  # MIDI pitch and velocity models: free-mean and unit-variance scaled in [-1.0, 1.0]
+                    # TODO extend this to work with multiple MIDI notes?
+                    # Mean is simply scaled to [-1.0, 1.0] (min/max normalization)
+                    midi_pitch_and_vel_mu = - 1.0 + 2.0 * sample_info[:, [1, 2]].float() / 127.0
+                    z_mu_logvar[:, 0, [0, 1]] = midi_pitch_and_vel_mu
+                    # log(var) corresponds to a unit standard deviation in the original [0, 127] MIDI domain
+                    z_mu_logvar[:, 1, [0, 1]] = np.log(4.0 / (127**2))
             n_minibatch = z_mu_logvar.size()[0]
             mu = z_mu_logvar[:, 0, :]
             sigma = torch.exp(z_mu_logvar[:, 1, :] / 2.0)
@@ -57,11 +125,12 @@ class BasicVAE(nn.Module):
             else:  # eval mode: no random sampling
                 z_sampled = mu
         with profiler.record_function("DECODING") if self.is_profiled else contextlib.nullcontext():
-            x_out = self.decoder(z_sampled)
+            if self.decoder is not None:
+                x_out = self.decoder(z_sampled)
         return z_mu_logvar, z_sampled, z_sampled, torch.zeros((z_sampled.shape[0], 1), device=x.device), x_out
 
-    def latent_loss(self, z_0_mu_logvar, **kwargs):
-        """ **kwargs are not used (they exist for compatibility with flow-based latent spaces). """
+    def latent_loss(self, z_0_mu_logvar, *args):
+        """ *args are not used (they exist for compatibility with flow-based latent spaces). """
         # Default: divergence or discrepancy vs. zero-mean unit-variance multivariate gaussian
         return self.latent_criterion(z_0_mu_logvar[:, 0, :], z_0_mu_logvar[:, 1, :])
 
@@ -177,7 +246,8 @@ class FlowVAE(nn.Module):
             # Forward flow (fast with nflows MAF implementation - always fast with RealNVP)
             z_K_sampled, log_abs_det_jac = self.flow_transform(z_0_sampled)
         with profiler.record_function("DECODING") if self.is_profiled else contextlib.nullcontext():
-            x_out = self.decoder(z_K_sampled)
+            if self.decoder is not None:
+                x_out = self.decoder(z_K_sampled)
         return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac , x_out
 
     def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):

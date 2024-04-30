@@ -5,7 +5,11 @@ or for building a previously trained model before loading state dicts.
 Decomposed into numerous small function for easier module-by-module debugging.
 """
 
-from model import VAE, encoder, decoder, extendedAE, regression
+from model import VAE, encoder, decoder, extendedAE, regression, seanet, encodec, lstm
+from model.quantization import vq
+from model.encodec.model import EncodecModel
+import numpy as np
+import torch.nn as nn
 
 
 def build_encoder_and_decoder_models(model_config, train_config):
@@ -19,13 +23,26 @@ def build_encoder_and_decoder_models(model_config, train_config):
 
     print("FORCE BIGGER ENC/DEC NETWORKS = {}".format(force_bigger_network))  # TODO remove
     print("MIDI NOTES = {}".format(model_config.midi_notes))  # TODO remove
-    encoder_model = \
-        encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
-                                   model_config.input_tensor_size, train_config.fc_dropout,
-                                   output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
-                                   deepest_features_mix=model_config.stack_specs_deepest_features_mix,
-                                   force_bigger_network=force_bigger_network)
-    decoder_model = decoder.SpectrogramDecoder(model_config.encoder_architecture, model_config.dim_z,
+    if model_config.encoder_architecture == 'seanet':
+        encoder_model = seanet.SEANetEncoder(dimension=model_config.dim_z, n_filters=8, ratios=[8, 4, 4, 2])
+    elif model_config.encoder_architecture == 'encodec_pretrained':
+        encodec_pretrained = EncodecModel.encodec_model_24khz()
+        encoder_model = encodec_pretrained.encoder
+    else:
+        encoder_model = \
+            encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
+                                    model_config.input_tensor_size, train_config.fc_dropout,
+                                    output_bn=(train_config.latent_flow_input_regularization.lower() == 'bn'),
+                                    deepest_features_mix=model_config.stack_specs_deepest_features_mix,
+                                    force_bigger_network=force_bigger_network,
+                                    stochastic_latent=model_config.stochastic_latent)
+        
+    if model_config.decoder_architecture == 'seanet':
+        decoder_model = seanet.SEANetDecoder(dimension=model_config.dim_z, n_filters=16, ratios=[8, 4, 4, 2])
+    elif model_config.decoder_architecture == 'encodec_pretrained':
+        decoder_model = encodec_pretrained.decoder
+    else:
+        decoder_model = decoder.SpectrogramDecoder(model_config.decoder_architecture, model_config.dim_z,
                                                model_config.input_tensor_size, train_config.fc_dropout,
                                                force_bigger_network=force_bigger_network)
     return encoder_model, decoder_model
@@ -40,15 +57,46 @@ def build_ae_model(model_config, train_config):
     :param train_config: train attributes (a few are required, e.g. dropout probability)
     :return: Tuple: encoder, decoder, full AE model
     """
+    if model_config.encoder_architecture == 'encodec_pretrained':
+        encodec_pretrained = EncodecModel.encodec_model_24khz()
+        encodec_pretrained.set_target_bandwidth(6)
+        encoder = encodec_pretrained.encoder
+        decoder = None
+        quantizer = encodec_pretrained.quantizer
+        emb_dim = encoder.dimension * (model_config.waveform_size // np.prod(encoder.ratios) + 1)
+        frame_rate = model_config.sampling_rate // encoder.hop_length
+        context_model = nn.Sequential(nn.Linear(emb_dim, emb_dim // 8), nn.ReLU(),
+                                      nn.Linear(emb_dim // 8, 1024), nn.ReLU(),
+                                      nn.Linear(1024, model_config.dim_z))
+        ae_model = VAE.DeterministicAE(encoder, model_config.dim_z, decoder, quantizer, context_model,
+                                       frame_rate=frame_rate, freeze=True)
+        return encoder, decoder, ae_model
+
     encoder_model, decoder_model = build_encoder_and_decoder_models(model_config, train_config)
     # AE model
-    if model_config.latent_flow_arch is None:
-        ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
-                                train_config.latent_loss)
+    if model_config.stochastic_latent:
+        if model_config.latent_flow_arch is None:
+            ae_model = VAE.BasicVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
+                                    train_config.latent_loss, concat_midi_to_z=model_config.concat_midi_to_z)
+        else:
+            # TODO test latent flow dropout (in all but the last flow layers)
+            ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
+                                model_config.latent_flow_arch, concat_midi_to_z0=model_config.concat_midi_to_z)
     else:
-        # TODO test latent flow dropout (in all but the last flow layers)
-        ae_model = VAE.FlowVAE(encoder_model, model_config.dim_z, decoder_model, train_config.normalize_losses,
-                               model_config.latent_flow_arch, concat_midi_to_z0=model_config.concat_midi_to_z)
+        if model_config.latent_quantization == 'rvq':
+            quantizer = vq.ResidualVectorQuantizer(dimension=model_config.dim_z)
+            context_model = lstm.ContextModel(dimension=model_config.dim_z)
+            frame_rate = model_config.sampling_rate // encoder_model.hop_length
+            ae_model = encodec.EncodecModel(encoder_model, decoder_model, quantizer, context_model,
+                                            frame_rate, sample_rate=model_config.sampling_rate, channels=1)
+        elif model_config.input_type == 'spectrogram':
+            context_model = None
+            ae_model = VAE.DeterministicAE(encoder_model, model_config.dim_z, decoder_model,
+                                           context_model=context_model, concat_midi_to_z=model_config.concat_midi_to_z)
+        elif model_config.input_type == 'waveform':
+            context_model = lstm.ContextModel(dimension=model_config.dim_z)
+            ae_model = VAE.DeterministicAE(encoder_model, model_config.dim_z, decoder_model,
+                                           context_model=context_model, concat_midi_to_z=model_config.concat_midi_to_z)
     return encoder_model, decoder_model, ae_model
 
 

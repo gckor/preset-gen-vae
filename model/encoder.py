@@ -23,7 +23,7 @@ def available_architectures():
 class SpectrogramEncoder(nn.Module):
     """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu and logs(var) values"""
     def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False,
-                 deepest_features_mix=True, force_bigger_network=False):
+                 deepest_features_mix=True, force_bigger_network=False, stochastic_latent=True):
         """
 
         :param architecture:
@@ -42,6 +42,7 @@ class SpectrogramEncoder(nn.Module):
         self.spectrogram_channels = input_tensor_size[1]
         self.architecture = architecture
         self.deepest_features_mix = deepest_features_mix
+        self.stochastic_latent = stochastic_latent
         # 2048 if single-ch, 1024 if multi-channel 4x4 mixer (to compensate for the large number of added params)
         self.mixer_1x1conv_ch = 1024 if (self.spectrogram_channels > 1) else 2048
         self.fc_dropout = fc_dropout
@@ -76,19 +77,20 @@ class SpectrogramEncoder(nn.Module):
             dummy_spectrogram = torch.zeros(single_element_input_tensor_size)
             self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
+        mlp_out_dim = self.dim_z * 2 if self.stochastic_latent else self.dim_z
         # No activation - outputs are latent mu/logvar
         if 'wavenet_baseline' in self.architecture\
                 or 'speccnn8l1' in self.architecture:  # (not an MLP...) much is done in the CNN
             # TODO batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
             #    add corresponding ctor argument (build with bn=True if using flow-based latent space)
             # TODO remove this dropout?
-            self.mlp = nn.Sequential(nn.Dropout(self.fc_dropout), nn.Linear(cnn_out_items, 2 * self.dim_z))
+            self.mlp = nn.Sequential(nn.Dropout(self.fc_dropout), nn.Linear(cnn_out_items, mlp_out_dim))
             if output_bn:
-                self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(2 * self.dim_z))
+                self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(mlp_out_dim))
         elif self.architecture == 'flow_synth':
             self.mlp = nn.Sequential(nn.Linear(cnn_out_items, 1024), nn.ReLU(),  # TODO dropouts
                                      nn.Linear(1024, 1024), nn.ReLU(),
-                                     nn.Linear(1024, 2 * self.dim_z))
+                                     nn.Linear(1024, mlp_out_dim))
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
 
@@ -103,9 +105,11 @@ class SpectrogramEncoder(nn.Module):
         n_minibatch = x_spectrograms.size()[0]
         cnn_out = self._forward_cnns(x_spectrograms).view(n_minibatch, -1)  # 2nd dim automatically inferred
         # print("Forward CNN out size = {}".format(cnn_out.size()))
-        z_mu_logvar = self.mlp(cnn_out)
+        out = self.mlp(cnn_out)
         # Last dim contains a latent proba distribution value, last-1 dim is 2 (to retrieve mu or logs sigma2)
-        return torch.reshape(z_mu_logvar, (n_minibatch, 2, self.dim_z))
+        if self.stochastic_latent:
+            out = torch.reshape(out, (n_minibatch, 2, self.dim_z))
+        return out
 
 
 class SpectrogramCNN(nn.Module):

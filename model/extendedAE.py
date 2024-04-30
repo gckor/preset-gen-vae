@@ -17,12 +17,10 @@ class ExtendedAE(nn.Module):
         super().__init__()
         self.idx_helper = idx_helper  # unused at the moment
         self.ae_model = ae_model
-        if isinstance(self.ae_model, VAE.BasicVAE):
-            self._is_flow_based_latent_space = False
-        elif isinstance(self.ae_model, VAE.FlowVAE):
+        if isinstance(self.ae_model, VAE.FlowVAE):
             self._is_flow_based_latent_space = True
         else:
-            raise TypeError("Unrecognized auto-encoder model")
+            self._is_flow_based_latent_space = False
         self.reg_model = reg_model
         if isinstance(self.reg_model, model.regression.FlowRegression):
             self._is_flow_based_regression = True

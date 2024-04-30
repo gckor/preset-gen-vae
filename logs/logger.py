@@ -57,8 +57,7 @@ def get_model_last_checkpoint(root_path: pathlib.Path, model_config, verbose=Tru
 def get_tensorboard_run_directory(root_path, model_config):
     """ Returns the directory where Tensorboard model metrics are stored, for a particular run. """
     # pb s'il y en a plusieurs ? (semble résolu avec override de add_hparam PyTorch)
-    return root_path.joinpath.joinpath('runs')\
-        .joinpath(model_config.name).joinpath(model_config.run_name)
+    return root_path.joinpath('runs').joinpath(model_config.name).joinpath(model_config.run_name)
 
 
 def erase_run_data(root_path, model_config):
@@ -160,7 +159,7 @@ class RunLogger:
             json.dump(config_dict, f)
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
             self.write_model_summary(main_model, input_tensor_size, 'VAE')
-            self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
+            # self.tensorboard.add_graph(main_model, torch.zeros(input_tensor_size))
         self.epoch_start_datetimes = [datetime.datetime.now()]
 
     def write_model_summary(self, model, input_tensor_size, model_name):

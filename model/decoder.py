@@ -32,12 +32,11 @@ class SpectrogramDecoder(nn.Module):
         self.last_4x4conv_ch = (512 if not force_bigger_network else 1800)
         self.fc_dropout = fc_dropout
 
-        if 'speccnn8l1' not in self.architecture:
-            raise NotImplementedError("Only speccnn8l1 is currently available"
-                                      "(stacked multi-note spectograms compatibility)")
+        if self.architecture is None:
+            print("Decoder is not included in the architecture")
 
         # - - - - - 1) MLP output size must to correspond to encoder's MLP input size - - - -
-        if self.architecture == 'wavenet_baseline'\
+        elif self.architecture == 'wavenet_baseline'\
            or self.architecture == 'wavenet_baseline_lighter':
             assert self.spectrogram_input_size == (513, 433)  # Big spectrogram only - TODO adapt
             self.cnn_input_shape = (1024, 2, 4)
@@ -81,6 +80,9 @@ class SpectrogramDecoder(nn.Module):
                                             force_bigger_network=force_bigger_network)
 
     def forward(self, z_sampled):
+        if self.architecture is None:
+            return z_sampled
+        
         mixed_features = self.mlp(z_sampled)
         mixed_features = mixed_features.view(-1,  # batch size auto inferred
                                              self.cnn_input_shape[0], self.cnn_input_shape[1], self.cnn_input_shape[2])
@@ -100,11 +102,10 @@ class SpectrogramCNN(nn.Module):
         """ Defines a decoder given the specified architecture. """
         super().__init__()
         self.architecture = architecture
-        if not append_1x1_conv:
-            assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
         self.spectrogram_input_size = spectrogram_input_size
         assert self.spectrogram_input_size[1] == 1  # This decoder is single-channel output
 
+        # Only this arch is fully-supported at the moment
         if self.architecture == 'wavenet_baseline':  # https://arxiv.org/abs/1704.01279
             ''' Symmetric layer output sizes (compared to the encoder).
             No activation and batch norm after the last up-conv.
@@ -266,9 +267,8 @@ class SpectrogramCNN(nn.Module):
                                         nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
                                         output_activation
                                         )
-
         else:
-            raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
+            self.dec_nn = nn.Identity()
 
     def forward(self, x_spectrogram):
         return self.dec_nn(x_spectrogram)

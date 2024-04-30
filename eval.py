@@ -10,7 +10,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Sequence
 import multiprocessing
-import copy
+from matplotlib import pyplot as plt
 
 import numpy as np
 import torch
@@ -30,6 +30,9 @@ import utils.audio
 import utils.config
 import synth.dexed
 
+import soundfile
+from pyvirtualdisplay import Display
+from tqdm import tqdm
 
 def evaluate_all_models(eval_config: utils.config.EvalConfig):
     """
@@ -39,15 +42,10 @@ def evaluate_all_models(eval_config: utils.config.EvalConfig):
     :return: TODO
     """
     # Retrieve the list of models to be evaluated
-    root_path = Path(__file__).resolve().parent
+    root_path = Path(eval_config.logs_root_dir)
     models_dirs_path = list()
-    saved_folder_name = ("saved" if not eval_config.load_from_archives else "saved_archives")
     for model_name in eval_config.models_names:
-        if eval_config.k_folds_count == 0:
-            models_dirs_path.append(root_path.joinpath('{}/{}'.format(saved_folder_name, model_name)))
-        else:  # Add k-folds if required
-            for kf in range(eval_config.k_folds_count):
-                models_dirs_path.append(root_path.joinpath('{}/{}_kf{}'.format(saved_folder_name, model_name, kf)))
+        models_dirs_path.append(root_path.joinpath(model_name))
     print("{} models found for evaluation".format(len(models_dirs_path)))
 
     # Single-model evaluation
@@ -67,7 +65,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     Loads a model from given directory (and its associated dataset) and performs a full evaluation
     TODO describe output
     """
-    root_path = Path(__file__).resolve().parent
+    root_path = Path(eval_config.logs_root_dir)
     t_start = datetime.now()
 
     # Special forced multi-note eval?
@@ -120,7 +118,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         torchinfo.summary(extended_ae_model.reg_model, input_size=(eval_config.minibatch_size, model_config.dim_z),
                           depth=5, device='cpu')
     # Eval midi notes
-    eval_midi_notes = (dataset.midi_notes if forced_midi_notes is None else forced_midi_notes)
+    # eval_midi_notes = (dataset.midi_notes if forced_midi_notes is None else forced_midi_notes)
+    eval_midi_notes = ((60, 85), )
     if eval_config.verbosity >= 1:
         print("Evaluation will be performed on {} MIDI note(s): {}".format(len(eval_midi_notes), eval_midi_notes))
 
@@ -151,19 +150,28 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper, reduce=True, percentage_output=True,
                                              limited_vst_params_indexes=dynamic_vst_controls_indexes)
     # correlation results - will be written to a separate pickle file (not averaged, for detailed study)
-    z0_metric = logs.metrics.CorrelationMetric(model_config.dim_z, sub_datasets_lengths[eval_config.dataset])
-    zK_metric = logs.metrics.CorrelationMetric(model_config.dim_z, sub_datasets_lengths[eval_config.dataset])
+    if model_config.stochastic_latent:
+        z0_metric = logs.metrics.CorrelationMetric(model_config.dim_z, sub_datasets_lengths[eval_config.dataset])
+        zK_metric = logs.metrics.CorrelationMetric(model_config.dim_z, sub_datasets_lengths[eval_config.dataset])
 
 
     # = = = = = 1) Infer all preset parameters = = = = =
     assert eval_config.minibatch_size == 1  # Required for per-preset metrics
     # This dataset's might contains multiple MIDI notes for single-note models, if forced_midi_notes is True
-    for i, sample in enumerate(dataloader[eval_config.dataset]):
-        x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+    for i, sample in tqdm(enumerate(dataloader[eval_config.dataset]), total=len(dataloader[eval_config.dataset])):
+        if model_config.input_type == 'waveform':
+            x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
+        else:   
+            x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
         ae_out = ae_model(x_in, sample_info)  # Spectral VAE - tuple output
-        z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-        z0_metric.append_batch(z_0_sampled)
-        zK_metric.append_batch(z_K_sampled)
+
+        if model_config.stochastic_latent:
+            z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+            z0_metric.append_batch(z_0_sampled)
+            zK_metric.append_batch(z_K_sampled)
+        else:
+            z_K_sampled, x_out = ae_out
+       
         v_out = reg_model(z_K_sampled)
         # Parameters inference metrics
         preset_UIDs.append(sample_info[0, 0].item())
@@ -187,12 +195,18 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
 
     # = = = = = 2) Evaluate audio from inferred synth parameters = = = = =
+    audio_path = path_to_model_dir.joinpath('audio')
+    spec_path = path_to_model_dir.joinpath('spectrogram')
+    os.makedirs(audio_path, exist_ok=True)
+    os.makedirs(spec_path, exist_ok=True)
+    
+
     num_workers = int(np.round(os.cpu_count() * eval_config.multiprocess_cores_ratio))
     preset_UIDs_split = np.array_split(preset_UIDs, num_workers, axis=0)
     synth_params_GT_split = np.array_split(synth_params_GT, num_workers, axis=0)
     synth_params_inferred_split = np.array_split(synth_params_inferred, num_workers, axis=0)
-    workers_data = [(dataset, eval_midi_notes,
-                     preset_UIDs_split[i], synth_params_GT_split[i], synth_params_inferred_split[i])
+    workers_data = [(dataset, eval_midi_notes, audio_path, spec_path, eval_config.sampling_rate,
+                     preset_UIDs_split[i], synth_params_inferred_split[i], i)
                     for i in range(num_workers)]
     # Multi-processing is absolutely necessary
     with multiprocessing.Pool(num_workers) as p:
@@ -228,19 +242,20 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # Main dataframe
     eval_df.to_pickle(eval_pickle_file_path)
     # Additional numpy files
-    try:
-        os.mkdir(path_to_model_dir.joinpath('eval_files'))
-    except FileExistsError:
-        pass  # Directory was already created
-    assert forced_midi_notes is None  # refactor the entire "__MULTI_NOTE__" special (and useless?) eval...
-    spearman_r, spearman_pvalues = z0_metric.get_spearman_corr_and_p_values()
-    np.save(path_to_model_dir.joinpath('eval_files/z0_spearman_r__{}.npy'.format(eval_config.dataset)), spearman_r)
-    np.save(path_to_model_dir.joinpath('eval_files/z0_spearman_pvalues__{}.npy'.format(eval_config.dataset)),
-            spearman_pvalues)
-    spearman_r, spearman_pvalues = zK_metric.get_spearman_corr_and_p_values()
-    np.save(path_to_model_dir.joinpath('eval_files/zK_spearman_r__{}.npy'.format(eval_config.dataset)), spearman_r)
-    np.save(path_to_model_dir.joinpath('eval_files/zK_spearman_pvalues__{}.npy'.format(eval_config.dataset)),
-            spearman_pvalues)
+    if model_config.stochastic_latent:
+        try:
+            os.mkdir(path_to_model_dir.joinpath('eval_files'))
+        except FileExistsError:
+            pass  # Directory was already created
+        assert forced_midi_notes is None  # refactor the entire "__MULTI_NOTE__" special (and useless?) eval...
+        spearman_r, spearman_pvalues = z0_metric.get_spearman_corr_and_p_values()
+        np.save(path_to_model_dir.joinpath('eval_files/z0_spearman_r__{}.npy'.format(eval_config.dataset)), spearman_r)
+        np.save(path_to_model_dir.joinpath('eval_files/z0_spearman_pvalues__{}.npy'.format(eval_config.dataset)),
+                spearman_pvalues)
+        spearman_r, spearman_pvalues = zK_metric.get_spearman_corr_and_p_values()
+        np.save(path_to_model_dir.joinpath('eval_files/zK_spearman_r__{}.npy'.format(eval_config.dataset)), spearman_r)
+        np.save(path_to_model_dir.joinpath('eval_files/zK_spearman_pvalues__{}.npy'.format(eval_config.dataset)),
+                spearman_pvalues)
     # End of eval
     if eval_config.verbosity >= 1:
         print("Finished evaluation ({}) in {:.1f}s".format(eval_pickle_file_path,
@@ -251,17 +266,33 @@ def _measure_audio_errors_worker(worker_args):
     return _measure_audio_errors(*worker_args)
 
 
-def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_notes,
-                          preset_UIDs: Sequence, synth_params_GT: np.ndarray, synth_params_inferred: np.ndarray):
+def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_notes, audio_path, spec_path,
+                          sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
     # Dict of per-UID errors (if multiple notes: note-averaged values)
     errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
-    for idx, preset_UID in enumerate(preset_UIDs):
-        mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)
+    for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
+        mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
             x_wav_original, _ = dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
+            disp = Display()
+            disp.start()
             x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+            disp.stop()
+            # Save .wav files
+            filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
+            filename_inferred = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.wav')
+            soundfile.write(filename_gt, x_wav_original, sampling_rate)
+            soundfile.write(filename_inferred, x_wav_inferred, sampling_rate)
+            
+            # Save log spectrogram figures
             similarity_eval = utils.audio.SimilarityEvaluator((x_wav_original, x_wav_inferred))
-            mae.append(similarity_eval.get_mae_log_stft(return_spectrograms=False))
+            _mae, log_stft = similarity_eval.get_mae_log_stft(return_spectrograms=True)
+            fig, _ = similarity_eval.display_stft(log_stft)
+            filename_spec = spec_path.joinpath(f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.png')
+            fig.savefig(filename_spec)
+            plt.close(fig)
+            
+            mae.append(_mae)
             sc.append(similarity_eval.get_spectral_convergence(return_spectrograms=False))
             mfcc13_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=13))
             mfcc40_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=40))

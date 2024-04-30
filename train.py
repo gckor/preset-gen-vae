@@ -11,7 +11,6 @@ See train_queue.py for enqueued training runs
 from pathlib import Path
 import contextlib
 
-import numpy as np
 import mkl
 import torch
 import torch.nn as nn
@@ -101,7 +100,13 @@ def train_config():
     # ========== Losses (criterion functions) ==========
     # Training losses (for backprop) and Metrics (monitoring) losses and accuracies
     # Some losses are defined in the models themselves
-    if config.train.normalize_losses:  # Reconstruction backprop loss
+    if config.model.input_type == 'waveform':
+        reconstruction_criterion = nn.L1Loss()
+        msspec_transformer = model.loss.MultiScaleMelSpectrogramLoss(config.model.sampling_rate,
+                                                                     f_min=64, normalized=True, alphas=False).to(device)
+        msspec_alphas = msspec_transformer.alphas
+        msspec_transformer = nn.DataParallel(msspec_transformer, device_ids=parallel_device_ids, output_device=device)
+    elif config.train.normalize_losses:  # Reconstruction backprop loss
         reconstruction_criterion = nn.MSELoss(reduction='mean')
     else:
         reconstruction_criterion = model.loss.L2Loss()
@@ -133,16 +138,13 @@ def train_config():
     scalars = {  # Reconstruction loss (variable scale) + monitoring metrics comparable across all models
                'ReconsLoss/Backprop/Train': EpochMetric(), 'ReconsLoss/Backprop/Valid': EpochMetric(),
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
+               # MSSpec loss
+               'MSSpecLoss/Backprop/Train': EpochMetric(), 'MSSpecLoss/Backprop/Valid': EpochMetric(),
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
                'Controls/QLoss/Train': EpochMetric(), 'Controls/QLoss/Valid': EpochMetric(),
-               'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),
-               # Latent-space and VAE losses
-               'LatLoss/Train': EpochMetric(), 'LatLoss/Valid': EpochMetric(),
-               'VAELoss/Train': SimpleMetric(), 'VAELoss/Valid': SimpleMetric(),
-               'LatCorr/Train': LatentMetric(config.model.dim_z, sub_datasets_lengths['train']),
-               'LatCorr/Valid': LatentMetric(config.model.dim_z, sub_datasets_lengths['validation']),
+               'Controls/Accuracy/Train': EpochMetric(), 'Controls/Accuracy/Valid': EpochMetric(),       
                # Other misc. metrics
                'Sched/LR': SimpleMetric(config.train.initial_learning_rate),
                'Sched/LRwarmup': LinearDynamicParam(config.train.lr_warmup_start_factor, 1.0,
@@ -153,11 +155,19 @@ def train_config():
                                                 current_epoch=config.train.start_epoch)}
     # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
     metrics = {'ReconsLoss/MSE/Valid_': logs.metrics.BufferedMetric(),
-               'LatLoss/Valid_': logs.metrics.BufferedMetric(),
-               'LatCorr/Valid_': logs.metrics.BufferedMetric(),
                'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
                'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
                'epochs': config.train.start_epoch}
+
+    if config.model.stochastic_latent:
+        # Latent-space and VAE losses
+        scalars['LatLoss/Train'], scalars['LatLoss/Valid'] = EpochMetric(), EpochMetric()
+        scalars['VAELoss/Train'], scalars['VAELoss/Valid'] = SimpleMetric(), SimpleMetric()
+        scalars['LatCorr/Train'] = LatentMetric(config.model.dim_z, sub_datasets_lengths['train'])
+        scalars['LatCorr/Valid'] = LatentMetric(config.model.dim_z, sub_datasets_lengths['validation'])
+        metrics['LatLoss/Valid_'] = logs.metrics.BufferedMetric()
+        metrics['LatCorr/Valid_'] = logs.metrics.BufferedMetric()
+    
     logger.tensorboard.init_hparams_and_metrics(metrics)  # hparams added knowing config.*
 
 
@@ -205,11 +215,17 @@ def train_config():
             for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
                 with profiler.record_function("DATA_LOAD") if is_profiled else contextlib.nullcontext():
                     sample = next(dataloader_iter)
-                    x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                    if config.model.input_type == 'waveform':
+                        x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
+                    else:
+                        x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
                 optimizer.zero_grad()
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
-                z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
-                scalars['LatCorr/Train'].append(z_0_mu_logvar, z_0_sampled)  # TODO store also z_K_sampled
+                if config.model.stochastic_latent:
+                    z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+                    scalars['LatCorr/Train'].append(z_0_mu_logvar, z_0_sampled)  # TODO store also z_K_sampled
+                else:
+                    z_K_sampled, x_out = ae_out
                 # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
                 #     need it for monitoring (so we don't ask for the log abs det jacobian return)
                 if isinstance(controls_criterion, model.loss.FlowParamsLoss):
@@ -220,20 +236,39 @@ def train_config():
                 else:
                     v_out = reg_model_parallel(z_K_sampled)
                 with profiler.record_function("BACKPROP") if is_profiled else contextlib.nullcontext():
-                    recons_loss = reconstruction_criterion(x_out, x_in)
+                    if config.model.decoder_architecture is None:
+                        recons_loss = torch.tensor([0], device=device)
+                    else:
+                        recons_loss = reconstruction_criterion(x_out, x_in)
                     scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
+
+                    if config.model.input_type == 'waveform' and config.model.encoder_architecture != 'encodec_pretrained':
+                        msspecs = msspec_transformer(x_in, x_out)
+                        msspec_loss = 0
+                        for j, specs in enumerate(msspecs):
+                            s_x_1, s_y_1, s_x_2, s_y_2 = specs[:, 0], specs[:, 1], specs[:, 2], specs[:, 3]
+                            msspec_loss += F.l1_loss(s_x_1, s_y_1) + msspec_alphas[j] * F.mse_loss(s_x_2, s_y_2)
+                        msspec_loss = msspec_loss / (2 * len(msspecs))
+                    else:
+                        msspec_loss = torch.tensor([0], device=device)
+                    scalars['MSSpecLoss/Backprop/Train'].append(msspec_loss)
+
                     # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
-                    lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                    scalars['LatLoss/Train'].append(lat_loss)
-                    lat_loss *= scalars['Sched/beta'].get(epoch)
+                    if config.model.stochastic_latent:
+                        lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
+                        scalars['LatLoss/Train'].append(lat_loss)
+                        lat_loss *= scalars['Sched/beta'].get(epoch)
+                    else:
+                        lat_loss = torch.tensor([0], device=device)
                     # Monitoring losses
                     with torch.no_grad():
                         scalars['ReconsLoss/MSE/Train'].append(recons_loss if config.train.normalize_losses
+                                                               or config.model.decoder_architecture is None
                                                                else F.mse_loss(x_out, x_in, reduction='mean'))
                         scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
                         scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
                     # Flow training stabilization loss?
-                    flow_input_loss = torch.tensor([0.0], device=lat_loss.device)
+                    flow_input_loss = torch.tensor([0], device=device)
                     if extended_ae_model.is_flow_based_latent_space and\
                             (config.train.latent_flow_input_regularization.lower() == 'dkl'):
                         flow_input_loss = 0.1 * config.train.beta * flow_input_dkl(z_0_mu_logvar[:, 0, :],
@@ -244,36 +279,68 @@ def train_config():
                         cont_loss = controls_criterion(z_0_mu_logvar, v_in)
                     scalars['Controls/BackpropLoss/Train'].append(cont_loss)
                     utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss)
-                    (recons_loss + lat_loss + flow_input_loss + cont_loss).backward()  # Actual backpropagation is here
+                    (recons_loss + lat_loss + flow_input_loss + msspec_loss + cont_loss).backward()  # Actual backpropagation is here
                 with profiler.record_function("OPTIM_STEP") if is_profiled else contextlib.nullcontext():
                     optimizer.step()  # Internal params. update; before scheduler step
                 # For full-trace profiling: we need to stop after a few mini-batches
                 if config.train.profiler_full_trace and i == 2:
                     break
+
         if prof is not None:
             logger.save_profiler_results(prof, config.train.profiler_full_trace)
         if config.train.profiler_full_trace:
             break  # Forced training stop
-        scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
-                                                + scalars['LatLoss/Train'].get())
+        if config.model.stochastic_latent:
+            scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
+                                                    + scalars['LatLoss/Train'].get())
 
         # = = = = = Evaluation on validation dataset (no profiling) = = = = =
         with torch.no_grad():
             ae_model_parallel.eval()  # BN stops running estimates
-            v_error = torch.Tensor().to(device=recons_loss.device)  # Params inference error (Tensorboard plot)
+            v_error = torch.Tensor().to(device=device)  # Params inference error (Tensorboard plot)
             for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
-                x_in, v_in, sample_info = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+                if config.model.input_type == 'waveform':
+                    x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
+                else:
+                    x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
-                z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+
+                if config.model.stochastic_latent:
+                    z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
+                    scalars['LatCorr/Valid'].append(z_0_mu_logvar, z_0_sampled)
+                else:
+                    z_K_sampled, x_out = ae_out
+
                 v_out = reg_model_parallel(z_K_sampled)
-                scalars['LatCorr/Valid'].append(z_0_mu_logvar, z_0_sampled)  # TODO add z_K
-                recons_loss = reconstruction_criterion(x_out, x_in)
+                  
+                if config.model.decoder_architecture is None:
+                    recons_loss = torch.tensor([0], device=device)
+                else:
+                    recons_loss = reconstruction_criterion(x_out, x_in)
+
                 scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
-                lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
-                scalars['LatLoss/Valid'].append(lat_loss)
-                # lat_loss *= scalars['Sched/beta'].get(epoch)  # Warmup factor: useless for monitoring
+
+                if config.model.input_type == 'waveform' and config.model.encoder_architecture != 'encodec_pretrained':
+                    msspecs = msspec_transformer(x_in, x_out)
+                    msspec_loss = 0
+                    for j, specs in enumerate(msspecs):
+                        s_x_1, s_y_1, s_x_2, s_y_2 = specs[:, 0], specs[:, 1], specs[:, 2], specs[:, 3]
+                        msspec_loss += F.l1_loss(s_x_1, s_y_1) + msspec_alphas[j] * F.mse_loss(s_x_2, s_y_2)
+                    msspec_loss = msspec_loss / (2 * len(msspecs))    
+                else:
+                    msspec_loss = torch.tensor([0], device=device)
+                
+                scalars['MSSpecLoss/Backprop/Valid'].append(msspec_loss)
+
+                if config.model.stochastic_latent:
+                    lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
+                    scalars['LatLoss/Valid'].append(lat_loss)
+                else:
+                    lat_loss = torch.tensor([0], device=device)              
+                
                 # Monitoring losses
                 scalars['ReconsLoss/MSE/Valid'].append(recons_loss if config.train.normalize_losses
+                                                       or config.model.decoder_architecture is None
                                                        else F.mse_loss(x_out, x_in, reduction='mean'))
                 scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                 scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
@@ -283,14 +350,16 @@ def train_config():
                     cont_loss = controls_criterion(z_0_mu_logvar, v_in)
                 scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
                 # Validation plots
-                if should_plot:
+                if should_plot and config.model.decoder_architecture is not None and config.model.input_type == 'spectrogram':
                     v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
                     if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
                         fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info, dataset,
                                                                        config.model, config.train)
                     logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
-        scalars['VAELoss/Valid'] = SimpleMetric(scalars['ReconsLoss/Backprop/Valid'].get()
-                                                + scalars['LatLoss/Valid'].get())
+
+        if config.model.stochastic_latent:
+            scalars['VAELoss/Valid'] = SimpleMetric(scalars['ReconsLoss/Backprop/Valid'].get()
+                                                    + scalars['LatLoss/Valid'].get())
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get() for loss_name in config.train.scheduler_loss]))
@@ -303,20 +372,23 @@ def train_config():
         for k, s in scalars.items():  # All available scalars are written to tensorboard
             logger.tensorboard.add_scalar(k, s.get(), epoch)
         if should_plot or early_stop:
-            fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=scalars['LatCorr/Valid'])
-            logger.tensorboard.add_figure('LatentMu', fig, epoch)
-            fig, _ = utils.figures.plot_spearman_correlation(latent_metric=scalars['LatCorr/Valid'])
-            logger.tensorboard.add_figure('LatentEntanglement', fig, epoch)
             if v_error.size(0) > 0:  # u_error might be empty on early_stop
                 fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(),
                                                                dataset.preset_indexes_helper)
                 logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
+            if config.model.stochastic_latent:
+                fig, _ = utils.figures.plot_latent_distributions_stats(latent_metric=scalars['LatCorr/Valid'])
+                logger.tensorboard.add_figure('LatentMu', fig, epoch)
+                fig, _ = utils.figures.plot_spearman_correlation(latent_metric=scalars['LatCorr/Valid'])
+                logger.tensorboard.add_figure('LatentEntanglement', fig, epoch)
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
-        metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
-        metrics['LatCorr/Valid_'].append(scalars['LatCorr/Valid'].get())
         metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
         metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
+
+        if config.model.stochastic_latent:
+            metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
+            metrics['LatCorr/Valid_'].append(scalars['LatCorr/Valid'].get())
         logger.tensorboard.update_metrics(metrics)
 
         # = = = = = Model+optimizer(+scheduler) save - ready for next epoch = = = = =

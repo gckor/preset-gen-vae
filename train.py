@@ -318,7 +318,7 @@ def train_config():
 
                 if config.model.contrastive:
                     aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
-                    batch_size = x_in.shape
+                    batch_size = x_in.shape[0]
                     x_in = torch.cat((x_in, aug_specs), dim=0)
 
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output

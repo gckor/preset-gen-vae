@@ -299,6 +299,9 @@ def train_config():
             (recons_loss + lat_loss + flow_input_loss + msspec_loss + contrastive_loss + cont_loss).backward()
             optimizer.step()
 
+            if i > 1:
+                break
+
         if config.model.stochastic_latent:
             scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
                                                     + scalars['LatLoss/Train'].get())
@@ -312,11 +315,12 @@ def train_config():
                     x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
                 else:
                     x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
-                ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
 
                 if config.model.contrastive:
                     aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
                     x_in = torch.cat((x_in, aug_specs), dim=0)
+
+                ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
 
                 if config.model.stochastic_latent:
                     z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out

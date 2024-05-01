@@ -318,6 +318,7 @@ def train_config():
 
                 if config.model.contrastive:
                     aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
+                    batch_size = x_in.shape
                     x_in = torch.cat((x_in, aug_specs), dim=0)
 
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
@@ -329,10 +330,10 @@ def train_config():
                     z_K_sampled, x_out = ae_out
 
                 if config.model.contrastive:
-                    logits, labels = model.loss.info_nce_loss(z_K_sampled, config.train.minibatch_size)
+                    logits, labels = model.loss.info_nce_loss(z_K_sampled, batch_size)
                     contrastive_loss = cross_entropy(logits, labels)
                     contrastive_loss = config.train.contrastive_coef * contrastive_loss
-                    z_K_sampled = z_K_sampled[:config.train.minibatch_size]
+                    z_K_sampled = z_K_sampled[:batch_size]
                 else:
                     contrastive_loss = torch.tensor([0], device=device)
 

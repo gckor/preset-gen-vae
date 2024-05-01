@@ -17,16 +17,17 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = 'CNNMLP_re'
-model.run_name = 'kfold1'  # run: different hyperparams, optimizer, etc... for a given model
+model.name = 'debug'
+model.run_name = 'debug'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
 model.encoder_architecture = 'speccnn8l1_bn' # 'speccnn8l1_bn', 'seanet'
 # Default: Same with the encoder architecture. Set to None to disable the decoder and reconstruction loss.
-model.decoder_architecture = 'speccnn8l1_bn' # 'speccnn8l1_bn', 'seanet', None
+model.decoder_architecture = None # 'speccnn8l1_bn', 'seanet', None
 model.latent_quantization = None # 'rvq', None
 model.input_type = 'spectrogram' # 'waveform', 'spectrogram'
-model.stochastic_latent = True # True (VAE), False (deterministic AE)
+model.stochastic_latent = False # True (VAE), False (deterministic AE)
+model.contrastive = True
 # Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_4l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'mlp_4l1024'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
@@ -88,12 +89,12 @@ train.minibatch_size = 160 # 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
-train.current_k_fold = 1 # 0, 1, 2, 3, 4
+train.current_k_fold = 0 # 0, 1, 2, 3, 4
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
-train.save_period = 20  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
-train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
+train.save_period = 2  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
+train.plot_period = 2  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 train.latent_loss = 'Dkl'  # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)
 # When using a latent flow z0-->zK, z0 is not regularized. To keep values around 0.0, batch-norm or a 0.1Dkl can be used
 train.latent_flow_input_regularization = 'bn'  # 'bn' (on encoder output) or 'dkl' (on q_Z0 gaussian flow input)
@@ -123,6 +124,7 @@ train.beta_start_value = 0.1  # Should not be zero (risk of a very unstable trai
 # Epochs of warmup increase from start_value to beta
 train.beta_warmup_epochs = 25  # See update_dynamic_config_params(). 16k samples dataset: set to 40
 train.beta_cycle_epochs = -1  # beta cyclic annealing (https://arxiv.org/abs/1903.10145). -1 deactivates TODO do
+train.contrastive_coef = 0.1
 
 train.scheduler_name = 'ReduceLROnPlateau'  # TODO try CosineAnnealing
 # Possible values: 'VAELoss' (total), 'ReconsLoss', 'Controls/BackpropLoss', ... All required losses will be summed

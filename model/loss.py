@@ -608,3 +608,37 @@ def hinge_real_loss(x: torch.Tensor) -> torch.Tensor:
 
 def hinge_fake_loss(x: torch.Tensor) -> torch.Tensor:
     return -torch.mean(torch.min(-x - 1, torch.tensor(0., device=x.device).expand_as(x)))
+
+
+def info_nce_loss(features, batch_size, n_views=None, temperature=0.07):
+    if n_views is None:
+        n_views = int(features.shape[0] / batch_size)
+    
+    labels = torch.cat([torch.arange(batch_size) for i in range(n_views)], dim=0)
+    labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+    labels = labels.to(features.device)
+
+    features = F.normalize(features, dim=1)
+
+    similarity_matrix = torch.matmul(features, features.T)
+    # assert similarity_matrix.shape == (
+    #     self.args.n_views * self.args.batch_size, self.args.n_views * self.args.batch_size)
+    # assert similarity_matrix.shape == labels.shape
+
+    # discard the main diagonal from both: labels and similarities matrix
+    mask = torch.eye(labels.shape[0], dtype=torch.bool).to(features.device)
+    labels = labels[~mask].view(labels.shape[0], -1)
+    similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
+    # assert similarity_matrix.shape == labels.shape
+
+    # select and combine multiple positives
+    positives = similarity_matrix[labels.bool()].view(labels.shape[0], -1)
+
+    # select only the negatives the negatives
+    negatives = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)
+
+    logits = torch.cat([positives, negatives], dim=1)
+    labels = torch.zeros(logits.shape[0], dtype=torch.long).to(features.device)
+
+    logits = logits / temperature
+    return logits, labels

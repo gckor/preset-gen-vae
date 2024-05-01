@@ -16,7 +16,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
-from torch.autograd import profiler
 
 import config
 import model.loss
@@ -140,6 +139,8 @@ def train_config():
                'ReconsLoss/MSE/Train': EpochMetric(), 'ReconsLoss/MSE/Valid': EpochMetric(),
                # MSSpec loss
                'MSSpecLoss/Backprop/Train': EpochMetric(), 'MSSpecLoss/Backprop/Valid': EpochMetric(),
+               # Contrastive loss
+               'ContrastiveLoss/Backprop/Train': EpochMetric(), 'ContrastiveLoss/Backprop/Valid': EpochMetric(),
                # 'ReconsLoss/SC/Train': EpochMetric(), 'ReconsLoss/SC/Valid': EpochMetric(),  # TODO
                # Controls losses used for backprop + monitoring metrics (quantized numerical loss, categorical accuracy)
                'Controls/BackpropLoss/Train': EpochMetric(), 'Controls/BackpropLoss/Valid': EpochMetric(),
@@ -210,8 +211,12 @@ def train_config():
 
             if config.model.input_type == 'waveform':
                 x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
-            else:
+            else: # config.model.input_type == 'spectrogram'
                 x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
+
+            if config.model.contrastive:
+                aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
+                x_in = torch.cat((x_in, aug_specs), dim=0)
 
             optimizer.zero_grad()
             ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
@@ -221,6 +226,15 @@ def train_config():
                 scalars['LatCorr/Train'].append(z_0_mu_logvar, z_0_sampled)
             else:
                 z_K_sampled, x_out = ae_out
+
+            if config.model.contrastive:
+                cross_entropy = nn.CrossEntropyLoss().to(device)
+                logits, labels = model.loss.info_nce_loss(z_K_sampled, config.train.minibatch_size)
+                contrastive_loss = cross_entropy(logits, labels)
+                contrastive_loss = config.train.contrastive_coef * contrastive_loss
+                z_K_sampled = z_K_sampled[:config.train.minibatch_size]
+            else:
+                contrastive_loss = torch.tensor([0], device=device)
 
             # Synth parameters regression. Flow-based: we do not care about v_out for backprop, but
             #     need it for monitoring (so we don't ask for the log abs det jacobian return)
@@ -237,8 +251,6 @@ def train_config():
             else:
                 recons_loss = reconstruction_criterion(x_out, x_in)
 
-            scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
-
             if config.model.input_type == 'waveform' and config.model.encoder_architecture != 'encodec_pretrained':
                 msspecs = msspec_transformer(x_in, x_out)
                 msspec_loss = 0
@@ -249,15 +261,13 @@ def train_config():
             else:
                 msspec_loss = torch.tensor([0], device=device)
 
-            scalars['MSSpecLoss/Backprop/Train'].append(msspec_loss)
-
             # Latent loss computed on 1 GPU using the ae_model itself (not its parallelized version)
             if config.model.stochastic_latent:
                 lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
                 scalars['LatLoss/Train'].append(lat_loss)
                 lat_loss *= scalars['Sched/beta'].get(epoch)
             else:
-                lat_loss = torch.tensor([0], device=device)
+                lat_loss = torch.tensor([0], device=device)        
 
             # Monitoring losses
             with torch.no_grad():
@@ -277,10 +287,17 @@ def train_config():
                 cont_loss = controls_criterion(v_out, v_in)
             else:
                 cont_loss = controls_criterion(z_0_mu_logvar, v_in)
+
+            # Log backpropagation losses
+            scalars['ReconsLoss/Backprop/Train'].append(recons_loss)
+            scalars['MSSpecLoss/Backprop/Train'].append(msspec_loss)
+            scalars['ContrastiveLoss/Backprop/Train'].append(contrastive_loss)    
             scalars['Controls/BackpropLoss/Train'].append(cont_loss)
-            utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss)
-            (recons_loss + lat_loss + flow_input_loss + msspec_loss + cont_loss).backward()  # Actual backpropagation is here
-            optimizer.step()  # Internal params. update; before scheduler step
+
+            # Update parameters
+            utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss, msspec_loss, cont_loss)
+            (recons_loss + lat_loss + flow_input_loss + msspec_loss + contrastive_loss + cont_loss).backward()
+            optimizer.step()
 
         if config.model.stochastic_latent:
             scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
@@ -297,20 +314,30 @@ def train_config():
                     x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
                 ae_out = ae_model_parallel(x_in, sample_info)  # Spectral VAE - tuple output
 
+                if config.model.contrastive:
+                    aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
+                    x_in = torch.cat((x_in, aug_specs), dim=0)
+
                 if config.model.stochastic_latent:
                     z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out = ae_out
                     scalars['LatCorr/Valid'].append(z_0_mu_logvar, z_0_sampled)
                 else:
                     z_K_sampled, x_out = ae_out
 
+                if config.model.contrastive:
+                    logits, labels = model.loss.info_nce_loss(z_K_sampled, config.train.minibatch_size)
+                    contrastive_loss = cross_entropy(logits, labels)
+                    contrastive_loss = config.train.contrastive_coef * contrastive_loss
+                    z_K_sampled = z_K_sampled[:config.train.minibatch_size]
+                else:
+                    contrastive_loss = torch.tensor([0], device=device)
+
                 v_out = reg_model_parallel(z_K_sampled)
                   
                 if config.model.decoder_architecture is None:
                     recons_loss = torch.tensor([0], device=device)
                 else:
-                    recons_loss = reconstruction_criterion(x_out, x_in)
-
-                scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
+                    recons_loss = reconstruction_criterion(x_out, x_in)               
 
                 if config.model.input_type == 'waveform' and config.model.encoder_architecture != 'encodec_pretrained':
                     msspecs = msspec_transformer(x_in, x_out)
@@ -321,14 +348,17 @@ def train_config():
                     msspec_loss = msspec_loss / (2 * len(msspecs))    
                 else:
                     msspec_loss = torch.tensor([0], device=device)
-                
-                scalars['MSSpecLoss/Backprop/Valid'].append(msspec_loss)
 
                 if config.model.stochastic_latent:
                     lat_loss = extended_ae_model.latent_loss(z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac)
                     scalars['LatLoss/Valid'].append(lat_loss)
                 else:
-                    lat_loss = torch.tensor([0], device=device)              
+                    lat_loss = torch.tensor([0], device=device)       
+
+                if config.model.forward_controls_loss:  # unused params might be modified by this criterion
+                    cont_loss = controls_criterion(v_out, v_in)
+                else:
+                    cont_loss = controls_criterion(z_0_mu_logvar, v_in)       
                 
                 # Monitoring losses
                 scalars['ReconsLoss/MSE/Valid'].append(recons_loss if config.train.normalize_losses
@@ -336,11 +366,13 @@ def train_config():
                                                        else F.mse_loss(x_out, x_in, reduction='mean'))
                 scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
                 scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
-                if config.model.forward_controls_loss:  # unused params might be modified by this criterion
-                    cont_loss = controls_criterion(v_out, v_in)
-                else:
-                    cont_loss = controls_criterion(z_0_mu_logvar, v_in)
+
+                # Log backpropagation valid losses
+                scalars['ReconsLoss/Backprop/Valid'].append(recons_loss)
+                scalars['MSSpecLoss/Backprop/Valid'].append(msspec_loss)
+                scalars['ContrastiveLoss/Backprop/Valid'].append(contrastive_loss)
                 scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
+
                 # Validation plots
                 if should_plot and config.model.decoder_architecture is not None and config.model.input_type == 'spectrogram':
                     v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
@@ -391,7 +423,6 @@ def train_config():
         if early_stop:
             print("[train.py] Training stopped early (final loss plateau)")
             break
-
 
     # ========== Logger final stats ==========
     logger.on_training_finished()

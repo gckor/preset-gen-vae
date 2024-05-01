@@ -300,6 +300,17 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             preset_params.get_learnable().squeeze().numpy(), \
             np.array([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=np.int32), \
             self.get_labels_tensor(preset_UID).numpy()
+
+    def get_aug_specs(self, preset_UIDs, augmented_pitch=[40, 50, 70]):
+        midi_pitch = np.random.choice(augmented_pitch)
+        midi_velocity = 85
+        aug_specs = []
+        
+        for preset_UID in preset_UIDs:
+            spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
+            aug_specs.append(spectrogram)
+
+        return torch.stack(aug_specs).unsqueeze(1)
     
     def get_data_from_file(self, preset_UID, midi_pitch, midi_velocity):
         with h5py.File(self.dataset_dir.joinpath('dataset.h5py'), 'r') as f:

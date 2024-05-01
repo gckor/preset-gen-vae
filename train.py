@@ -299,9 +299,6 @@ def train_config():
             (recons_loss + lat_loss + flow_input_loss + msspec_loss + contrastive_loss + cont_loss).backward()
             optimizer.step()
 
-            if i > 1:
-                break
-
         if config.model.stochastic_latent:
             scalars['VAELoss/Train'] = SimpleMetric(scalars['ReconsLoss/Backprop/Train'].get()
                                                     + scalars['LatLoss/Train'].get())

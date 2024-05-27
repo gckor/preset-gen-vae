@@ -7,9 +7,13 @@ Decomposed into numerous small function for easier module-by-module debugging.
 
 from model import VAE, encoder, decoder, extendedAE, regression, seanet, encodec, lstm
 from model.quantization import vq
+from model.audiomae import models_mae, misc
 from model.encodec.model import EncodecModel
 import numpy as np
+import torch
 import torch.nn as nn
+
+import timm.optim.optim_factory as optim_factory
 
 
 def build_encoder_and_decoder_models(model_config, train_config):
@@ -28,6 +32,15 @@ def build_encoder_and_decoder_models(model_config, train_config):
     elif model_config.encoder_architecture == 'encodec_pretrained':
         encodec_pretrained = EncodecModel.encodec_model_24khz()
         encoder_model = encodec_pretrained.encoder
+    elif model_config.encoder_architecture == 'audiomae_pretrained':
+        encoder_model = models_mae.__dict__['mae_vit_base_patch16'](
+            img_size=(336, 256),
+            in_chans=1,
+            audio_exp=True,
+            decoder_mode=1,
+        )
+        checkpoint = model_config.pretrained_dir
+        misc.load_model(checkpoint, encoder_model)
     else:
         encoder_model = \
             encoder.SpectrogramEncoder(model_config.encoder_architecture, enc_z_length,
@@ -41,6 +54,9 @@ def build_encoder_and_decoder_models(model_config, train_config):
         decoder_model = seanet.SEANetDecoder(dimension=model_config.dim_z, n_filters=16, ratios=[8, 4, 4, 2])
     elif model_config.decoder_architecture == 'encodec_pretrained':
         decoder_model = encodec_pretrained.decoder
+    elif model_config.decoder_architecture is None:
+        print("Decoder is not included in the architecture")
+        decoder_model = None
     else:
         decoder_model = decoder.SpectrogramDecoder(model_config.decoder_architecture, model_config.dim_z,
                                                model_config.input_tensor_size, train_config.fc_dropout,

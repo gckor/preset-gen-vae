@@ -13,7 +13,15 @@ eval.start_datetime = datetime.datetime.now().isoformat()
 
 # Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
 eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
+                     'CNNMLP/kfold0',
+                     'CNNMLP/kfold1',
                      'CNNMLP_deter/kfold0',
+                     'CNNMLP_deter/kfold1',
+                     'CNNMLP_deter_wo_dec/kfold0',
+                     'CNNMLP_deter_wo_dec/kfold1',
+                     'contra_cnnmlp_deter/kfold0',
+                     'contra_cnnmlp_deter/kfold1',
+                     'FlFl/kfold0',
                      ]
 eval.dataset = 'test'  # Do not use 'test' dataset during models development
 eval.override_previous_eval = False  # If True, all models be re-evaluated (might be very long)

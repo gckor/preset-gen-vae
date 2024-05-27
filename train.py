@@ -34,43 +34,35 @@ from tqdm import tqdm
 
 
 def train_config():
-    """ Performs a full training run, as described by parameters in config.py.
-
+    """
+    Performs a full training run, as described by parameters in config.py.
     Some attributes from config.py might be dynamically changed by train_queue.py (or this script,
-    after loading the datasets) - so they can be different from what's currently written in config.py. """
-
-
-    # ========== Datasets and DataLoaders ==========
-    # Must be constructed first because dataset output sizes will be required to automatically
-    # infer models output sizes.
-    # ********************* config.model.dim_z will be changed if a flow network is used **********************
+    after loading the datasets) - so they can be different from what's currently written in config.py.
+    """
     dataset = data.build.get_dataset(config.model, config.train)
-    # dataloader is a dict of 3 subsets dataloaders ('train', 'validation' and 'test')
     dataloader, sub_datasets_lengths = data.build.get_split_dataloaders(config.train, dataset)
 
-
-    # ========== Logger init (required to load from checkpoint) and Config check ==========
     root_path = Path(config.model.logs_root_dir)
     logger = logs.logger.RunLogger(root_path, config.model, config.train)
+
     if logger.restart_from_checkpoint:
         model.build.check_configs_on_resume_from_checkpoint(config.model, config.train,
                                                             logger.get_previous_config_from_json())
-    if config.train.start_epoch > 0:  # Resume from checkpoint?
+
+    if config.train.start_epoch > 0:
         start_checkpoint = logs.logger.get_model_checkpoint(root_path, config.model, config.train.start_epoch - 1)
     else:
         start_checkpoint = None
 
-
-    # ========== Model definition (requires the full_dataset to be built) ==========
     _, _, _, extended_ae_model = model.build.build_extended_ae_model(config.model, config.train,
                                                                      dataset.preset_indexes_helper)
     if start_checkpoint is not None:
         extended_ae_model.load_state_dict(start_checkpoint['ae_model_state_dict'])  # GPU tensor params
+
     extended_ae_model.eval()
-    # will write tensorboard graph and torchinfo txt summary. model must not be parallel
-    logger.init_with_model(extended_ae_model, config.model.input_tensor_size)  # main model
+    logger.init_with_model(extended_ae_model, config.model.input_tensor_size)
     logger.write_model_summary(extended_ae_model.reg_model, (config.train.minibatch_size, config.model.dim_z),
-                               "reg")  # Another summary write
+                               "reg")
 
 
     # ========== Training devices (GPU(s) only) ==========

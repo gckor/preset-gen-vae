@@ -17,17 +17,17 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = 'contra_cnnmlp_deter'
+model.name = 'amae100_nomask'
 model.run_name = 'kfold0'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-model.encoder_architecture = 'speccnn8l1_bn' # 'speccnn8l1_bn', 'seanet'
+model.encoder_architecture = 'audiomae_pretrained' # 'speccnn8l1_bn', 'seanet', 'audiomae_pretrained'
 # Default: Same with the encoder architecture. Set to None to disable the decoder and reconstruction loss.
 model.decoder_architecture = None # 'speccnn8l1_bn', 'seanet', None
 model.latent_quantization = None # 'rvq', None
 model.input_type = 'spectrogram' # 'waveform', 'spectrogram'
 model.stochastic_latent = False # True (VAE), False (deterministic AE)
-model.contrastive = True
+model.contrastive = False
 # Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_4l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'mlp_4l1024'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
@@ -39,6 +39,7 @@ model.mel_bins = 257  # -1 disables Mel-scale spectrogram. Try: 257, 513, ...
 model.mel_f_limits = (0, 11050)  # min/max Mel-spectrogram frequencies TODO implement
 # Tuple of (pitch, velocity) tuples. Using only 1 midi note is fine.
 model.midi_notes = ((60, 85), )  # Reference note
+# model.midi_notes = ((60, 85), (40, 85), (50, 85), (70, 85))
 # model.midi_notes = ((40, 85), (50, 85), (60, 42), (60, 85), (60, 127), (70, 85))
 model.stack_spectrograms = False  # If True, dataset will feed multi-channel spectrograms to the encoder
 model.stack_specs_deepest_features_mix = False  # if True, feats mixed in the deepest 1x1 conv, else in the deepest 4x4
@@ -55,7 +56,7 @@ model.input_tensor_size = None  # see update_dynamic_config_params()
 # If True, encoder output is reduced by 2 for 1 MIDI pitch and 1 velocity to be concatenated to the latent vector
 model.concat_midi_to_z = None  # See update_dynamic_config_params()
 # Latent space dimension  *************** When using a Flow regressor, this dim is automatically set ******************
-model.dim_z = 610 # 610  # Including possibly concatenated midi pitch and velocity
+model.dim_z = 768 # 610  # Including possibly concatenated midi pitch and velocity
 # Latent flow architecture, e.g. 'realnvp_6l300', 'realnvp_4l200' (4 flows, 200 hidden features per flow)
 #    - base architectures can be realnvp, maf, ...
 #    - set to None to disable latent space flow transforms
@@ -81,18 +82,19 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # Directory for saving metrics, samples, models, etc... see README.md
 model.logs_root_dir = "/exp_logs/preset-gen-vae"  # Path from this directory
 model.dataset_dir = "/dataset/preset-gen-vae/numcatpp"
+model.pretrained_dir = "/exp_logs/preset-gen-vae/audiomae/default/checkpoint-100.pth"
 
 
 train = _Config()
 train.start_datetime = datetime.datetime.now().isoformat()
-train.minibatch_size = 160 # 160
+train.minibatch_size = 32 # 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
-train.current_k_fold = 0 # 0, 1, 2, 3, 4
+train.current_k_fold = 1 # 0, 1, 2, 3, 4
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
-train.n_epochs = 400  # See update_dynamic_config_params().  16k sample dataset: set to 700
+train.n_epochs = 300  # See update_dynamic_config_params().  16k sample dataset: set to 700
 train.save_period = 20  # Period for checkpoint saves (large disk size). Tensorboard scalars/metric logs at all epochs.
 train.plot_period = 20  # Period (in epochs) for plotting graphs into Tensorboard (quite CPU and SSD expensive)
 train.latent_loss = 'Dkl'  # Latent regularization loss: Dkl or MMD for Basic VAE (Flow VAE has its own specific loss)

@@ -286,13 +286,6 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
             waveform, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
             spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
-
-            if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
-                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
-                            / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
-            elif self.spectrogram_normalization == 'mean_std':
-                spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
-
             spectrograms.append(spectrogram)     
 
         return waveform.astype(np.float32), \
@@ -331,7 +324,15 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def get_spec_file(self, preset_UID, midi_note, midi_velocity):
         file_path = self.get_spec_file_path(preset_UID, midi_note, midi_velocity)
         try:
-            return torch.load(file_path)
+            spectrogram = torch.load(file_path)
+
+            if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
+                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
+                            / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
+            elif self.spectrogram_normalization == 'mean_std':
+                spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
+
+            return spectrogram
         except RuntimeError:
             raise RuntimeError("[data/dataset.py] Can't open file {}. Please pre-render spectrogram files for this "
                                "dataset configuration.".format(file_path))

@@ -127,6 +127,16 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
 
         preset_UID = self.valid_preset_UIDs[preset_index]
         waveform, spectrogram, synth_param, sample_info, label = self.get_data_from_file(preset_UID, ref_midi_pitch, ref_midi_velocity)
+        
+        if self._multichannel_stacked_spectrograms:
+            spectrograms = []
+
+            for midi_note, midi_velocity in self.midi_notes:
+                spectrogram = self.get_spec_file(preset_UID, midi_note, midi_velocity).numpy()                
+                spectrograms.append(spectrogram)
+            
+            spectrogram = np.stack(spectrograms)
+        
         return torch.FloatTensor(waveform).unsqueeze(0), \
             torch.tensor(spectrogram), \
             torch.tensor(synth_param), \

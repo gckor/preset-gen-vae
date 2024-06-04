@@ -21,55 +21,82 @@ def available_architectures():
 
 
 class SpectrogramEncoder(nn.Module):
-    """ Contains a spectrogram-input CNN and some MLP layers, and outputs the mu and logs(var) values"""
-    def __init__(self, architecture, dim_z, input_tensor_size, fc_dropout, output_bn=False,
-                 deepest_features_mix=True, force_bigger_network=False, stochastic_latent=True):
-        """
+    """
+    Contains a spectrogram-input CNN and some MLP layers,
+    and outputs the mu and logs(var) values
 
-        :param architecture:
-        :param dim_z:
-        :param input_tensor_size:
-        :param fc_dropout:
-        :param output_bn:
-        :param deepest_features_mix: (applies to multi-channel spectrograms only) If True, features mixing will be
-            done on the 1x1 deepest conv layer. If False, mixing will be done before the deepest conv layer (see
-            details in implementation)
-        :param force_bigger_network: Optional, to impose a higher number of channels for the last 4x4 (should be
-            used for fair comparisons between single/multi-specs encoder)
-        """
+    :param architecture:
+    :param dim_z:
+    :param input_tensor_size:
+    :param fc_dropout:
+    :param output_bn:
+    :param deepest_features_mix: (applies to multi-channel spectrograms only) If True, features mixing will be
+        done on the 1x1 deepest conv layer. If False, mixing will be done before the deepest conv layer (see
+        details in implementation)
+    :param force_bigger_network: Optional, to impose a higher number of channels for the last 4x4 (should be
+        used for fair comparisons between single/multi-specs encoder)
+    """
+
+    def __init__(
+        self,
+        architecture,
+        dim_z,
+        input_tensor_size,
+        fc_dropout,
+        output_bn=False,
+        deepest_features_mix=True,
+        stochastic_latent=True
+    ):
         super().__init__()
         self.dim_z = dim_z  # Latent-vector size (2*dim_z encoded values - mu and logs sigma 2)
-        self.spectrogram_channels = input_tensor_size[1]
         self.architecture = architecture
         self.deepest_features_mix = deepest_features_mix
         self.stochastic_latent = stochastic_latent
         # 2048 if single-ch, 1024 if multi-channel 4x4 mixer (to compensate for the large number of added params)
+        self.spectrogram_channels = input_tensor_size[1]
         self.mixer_1x1conv_ch = 1024 if (self.spectrogram_channels > 1) else 2048
         self.fc_dropout = fc_dropout
-        # - - - - - 1) Main CNN encoder (applied once per input spectrogram channel) - - - - -
+
+        # 1) Main CNN encoder (applied once per input spectrogram channel) - - - - -
         # stacked spectrograms: don't add the final 1x1 conv layer, or the 2 last conv layers (1x1 and 4x4)
-        self.single_ch_cnn = SpectrogramCNN(self.architecture, last_layers_to_remove=(1 if self.deepest_features_mix
-                                                                                      else 2))
-        # - - - - - 2) Features mixer - - - - -
-        assert self.architecture == 'speccnn8l1_bn'  # Only this arch is fully-supported at the moment
+        self.single_ch_cnn = SpectrogramCNN(
+            self.architecture,
+            last_layers_to_remove=(1 if self.deepest_features_mix else 2)
+        )
+        
+        # 2) Features mixer
+        assert self.architecture == 'speccnn8l1_bn'
         self.features_mixer_cnn = nn.Sequential()
         if self.deepest_features_mix:
-            self.features_mixer_cnn = layer.Conv2D(512*self.spectrogram_channels, self.mixer_1x1conv_ch,
-                                                   [1, 1], [1, 1], 0, [1, 1],
-                                                   activation=nn.LeakyReLU(0.1), name_prefix='enc8', batch_norm=None)
+            self.features_mixer_cnn = layer.Conv2D(
+                512 * self.spectrogram_channels,
+                self.mixer_1x1conv_ch,
+                [1, 1], [1, 1], 0, [1, 1],
+                activation=nn.LeakyReLU(0.1),
+                name_prefix='enc8',
+                batch_norm=None
+            )
         else:  # mixing conv layer: deepest-1 (4x4 kernel)
-            if not force_bigger_network:  # Default: auto-managed number of layers
-                n_4x4_ch = 512 if self.spectrogram_channels == 1 else 768
-            else:
-                n_4x4_ch = 1800  # Forced number of layers, for some very specific experiments only
-            self.features_mixer_cnn \
-                = nn.Sequential(layer.Conv2D(256*self.spectrogram_channels, n_4x4_ch, [4, 4], [2, 2], 2, [1, 1],
-                                             activation=nn.LeakyReLU(0.1), name_prefix='enc7'),
-                                layer.Conv2D(n_4x4_ch, self.mixer_1x1conv_ch,
-                                             [1, 1], [1, 1], 0, [1, 1],
-                                             activation=nn.LeakyReLU(0.1), name_prefix='enc8', batch_norm=None)
-                                )
-        # - - - - - 3) MLP for extracting properly-sized latent vector - - - - -
+            n_4x4_ch = 512 if self.spectrogram_channels == 1 else 768
+            self.features_mixer_cnn = nn.Sequential(
+                layer.Conv2D(
+                    256 * self.spectrogram_channels,
+                    n_4x4_ch,
+                    [4, 4], [2, 2], 2, [1, 1],
+                    activation=nn.LeakyReLU(0.1),
+                    name_prefix='enc7'
+                ),
+                layer.Conv2D(
+                    n_4x4_ch,
+                    self.mixer_1x1conv_ch,
+                    [1, 1], [1, 1], 0, [1, 1],
+                    activation=nn.LeakyReLU(0.1),
+                    name_prefix='enc8',
+                    batch_norm=None
+                )
+            )
+
+        # 3) MLP for extracting properly-sized latent vector
         # Automatic CNN output tensor size inference
         with torch.no_grad():
             single_element_input_tensor_size = list(input_tensor_size)
@@ -78,21 +105,15 @@ class SpectrogramEncoder(nn.Module):
             self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
         mlp_out_dim = self.dim_z * 2 if self.stochastic_latent else self.dim_z
+        
         # No activation - outputs are latent mu/logvar
-        if 'wavenet_baseline' in self.architecture\
-                or 'speccnn8l1' in self.architecture:  # (not an MLP...) much is done in the CNN
-            # TODO batch-norm here to compensate for unregularized z0 of a flow-based latent space (replace 0.1 Dkl)
-            #    add corresponding ctor argument (build with bn=True if using flow-based latent space)
-            # TODO remove this dropout?
-            self.mlp = nn.Sequential(nn.Dropout(self.fc_dropout), nn.Linear(cnn_out_items, mlp_out_dim))
-            if output_bn:
-                self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(mlp_out_dim))
-        elif self.architecture == 'flow_synth':
-            self.mlp = nn.Sequential(nn.Linear(cnn_out_items, 1024), nn.ReLU(),  # TODO dropouts
-                                     nn.Linear(1024, 1024), nn.ReLU(),
-                                     nn.Linear(1024, mlp_out_dim))
-        else:
-            raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
+        self.mlp = nn.Sequential(
+            nn.Dropout(self.fc_dropout),
+            nn.Linear(cnn_out_items, mlp_out_dim)
+        )
+
+        if output_bn:
+            self.mlp.add_module('lat_in_regularization', nn.BatchNorm1d(mlp_out_dim))
 
     def _forward_cnns(self, x_spectrograms):
         # apply main cnn multiple times

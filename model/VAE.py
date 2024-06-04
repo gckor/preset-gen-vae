@@ -165,17 +165,21 @@ class FlowVAE(nn.Module):
         self.decoder = decoder
         self.is_profiled = False
         self.normalize_latent_loss = normalize_latent_loss
+
         # Latent flow setup
         flow_args = flow_arch.split('_')
+        
         if len(flow_args) < 2:
             raise AssertionError("flow_arch argument must contains at least a flow type and layers description, "
                                  "e.g. 'realnvp_4l200'")
         elif len(flow_args) > 2:
             raise NotImplementedError("Optional flow arch argument not supported yet")
+        
         self.flow_arch = flow_args[0]
         flow_layers_args = flow_args[1].split('l')
         self.flow_layers_count = int(flow_layers_args[0])
         self.flow_hidden_features = int(flow_layers_args[1])
+        
         if self.flow_arch.lower() == 'maf':
             transforms = []
             for _ in range(self.flow_layers_count):
@@ -216,39 +220,43 @@ class FlowVAE(nn.Module):
         :returns: z0_mu_logvar, z0_sampled, zK_sampled, logabsdetjacT, x_out (reconstructed spectrogram)
         """
         n_minibatch = x.size()[0]
-        with profiler.record_function("ENCODING") if self.is_profiled else contextlib.nullcontext():
-            # Don't ask for requires_grad or this tensor becomes a leaf variable (it will require grad later)
-            z_0_mu_logvar = torch.empty((n_minibatch, 2, self.dim_z), device=x.device, requires_grad=False)
-            if not self.concat_midi_to_z0:
-                z_0_mu_logvar = self.encoder(x)
-            else:  # insert midi notes if required
-                z_0_mu_logvar[:, :, 2:] = self.encoder(x)
-                if sample_info is None:  # missing MIDI notes are tolerated for graphs and summaries
-                    z_0_mu_logvar[:, :, [0, 1]] = 0.0
-                else:  # MIDI pitch and velocity models: free-mean and unit-variance scaled in [-1.0, 1.0]
-                    # TODO extend this to work with multiple MIDI notes?
-                    # Mean is simply scaled to [-1.0, 1.0] (min/max normalization)
-                    midi_pitch_and_vel_mu = - 1.0 + 2.0 * sample_info[:, [1, 2]].float() / 127.0
-                    z_0_mu_logvar[:, 0, [0, 1]] = midi_pitch_and_vel_mu
-                    # log(var) corresponds to a unit standard deviation in the original [0, 127] MIDI domain
-                    z_0_mu_logvar[:, 1, [0, 1]] = np.log(4.0 / (127**2))
-            # Separate mean and standard deviation
-            mu0 = z_0_mu_logvar[:, 0, :]
-            sigma0 = torch.exp(z_0_mu_logvar[:, 1, :] / 2.0)
-        with profiler.record_function("LATENT_FLOW") if self.is_profiled else contextlib.nullcontext():
-            if self.training:
-                # Sampling from the q_phi(z|x) probability distribution - with re-parametrization trick
-                eps = Normal(torch.zeros(n_minibatch, self.dim_z, device=mu0.device),
-                             torch.ones(n_minibatch, self.dim_z, device=mu0.device)).sample()
-                z_0_sampled = mu0 + sigma0 * eps
-            else:  # eval mode: no random sampling
-                z_0_sampled = mu0
-            # Forward flow (fast with nflows MAF implementation - always fast with RealNVP)
-            z_K_sampled, log_abs_det_jac = self.flow_transform(z_0_sampled)
-        with profiler.record_function("DECODING") if self.is_profiled else contextlib.nullcontext():
-            if self.decoder is not None:
-                x_out = self.decoder(z_K_sampled)
-        return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac , x_out
+        
+        # Don't ask for requires_grad or this tensor becomes a leaf variable (it will require grad later)
+        z_0_mu_logvar = torch.empty((n_minibatch, 2, self.dim_z), device=x.device, requires_grad=False)
+        
+        if not self.concat_midi_to_z0:
+            z_0_mu_logvar = self.encoder(x)
+        else:  # insert midi notes if required
+            z_0_mu_logvar[:, :, 2:] = self.encoder(x)
+            if sample_info is None:  # missing MIDI notes are tolerated for graphs and summaries
+                z_0_mu_logvar[:, :, [0, 1]] = 0.0
+            else:  # MIDI pitch and velocity models: free-mean and unit-variance scaled in [-1.0, 1.0]
+                # TODO extend this to work with multiple MIDI notes?
+                # Mean is simply scaled to [-1.0, 1.0] (min/max normalization)
+                midi_pitch_and_vel_mu = - 1.0 + 2.0 * sample_info[:, [1, 2]].float() / 127.0
+                z_0_mu_logvar[:, 0, [0, 1]] = midi_pitch_and_vel_mu
+                # log(var) corresponds to a unit standard deviation in the original [0, 127] MIDI domain
+                z_0_mu_logvar[:, 1, [0, 1]] = np.log(4.0 / (127**2))
+        # Separate mean and standard deviation
+        mu0 = z_0_mu_logvar[:, 0, :]
+        sigma0 = torch.exp(z_0_mu_logvar[:, 1, :] / 2.0)
+        
+        if self.training:
+            # Sampling from the q_phi(z|x) probability distribution - with re-parametrization trick
+            eps = Normal(torch.zeros(n_minibatch, self.dim_z, device=mu0.device),
+                            torch.ones(n_minibatch, self.dim_z, device=mu0.device)).sample()
+            z_0_sampled = mu0 + sigma0 * eps
+        else:  # eval mode: no random sampling
+            z_0_sampled = mu0
+        # Forward flow (fast with nflows MAF implementation - always fast with RealNVP)
+        z_K_sampled, log_abs_det_jac = self.flow_transform(z_0_sampled)
+        
+        if self.decoder is not None:
+            x_out = self.decoder(z_K_sampled)
+        else:
+            x_out = None
+
+        return z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac, x_out
 
     def latent_loss(self, z_0_mu_logvar, z_0_sampled, z_K_sampled, log_abs_det_jac):
         # log-probability of z_0 is evaluated knowing the gaussian distribution it was sampled from

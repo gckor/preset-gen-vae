@@ -29,7 +29,7 @@ from data.preset import DexedPresetsParams, PresetIndexesHelper
 class DexedDataset(abstractbasedataset.PresetDataset):
     def __init__(self, note_duration, n_fft, fft_hop,
                  midi_notes=((60, 100),), multichannel_stacked_spectrograms=False,
-                 n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
+                 n_mel_bins=-1,
                  normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
                  algos=None, operators=None,
                  vst_params_learned_as_categorical: Optional[str] = None,
@@ -62,7 +62,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             audio files
         """
         super().__init__(note_duration, n_fft, fft_hop, midi_notes, multichannel_stacked_spectrograms,
-                         n_mel_bins, mel_fmin, mel_fmax,
+                         n_mel_bins,
                          normalize_audio, spectrogram_min_dB, spectrogram_normalization, learn_mod_wheel_params,
                          dataset_dir, sample_rate)
         assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params

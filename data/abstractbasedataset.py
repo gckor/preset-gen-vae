@@ -28,7 +28,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
                  n_fft, fft_hop,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
                  midi_notes=((60, 100),),
                  multichannel_stacked_spectrograms=False,
-                 n_mel_bins=-1, mel_fmin=30.0, mel_fmax=11e3,
+                 n_mel_bins=-1,
                  normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
                  learn_mod_wheel_params=False,
                  dataset_dir=None,
@@ -45,8 +45,6 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             (1 layer = 1 midi pitch and velocity). If False, the dataset length will be multiplied by the number
             of midi notes.
         :param n_mel_bins: Number of frequency bins for the Mel-spectrogram. If -1, the normal STFT will be used
-        :param mel_fmin: TODO implement
-        :param mel_fmax: TODO implement
         :param normalize_audio:  If True, audio from RenderMan will be normalized
         :param spectrogram_min_dB:  Noise-floor threshold value for log-scale spectrograms
         :param spectrogram_normalization: 'min_max' to get output spectrogram values in [-1, 1], or 'mean_std'
@@ -62,8 +60,6 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             assert not multichannel_stacked_spectrograms  # Check ctor arguments
         self._multichannel_stacked_spectrograms = multichannel_stacked_spectrograms
         self.n_mel_bins = n_mel_bins
-        self.mel_fmin = mel_fmin
-        self.mel_fmax = mel_fmax
         self.normalize_audio = normalize_audio
         self.learn_mod_wheel_params = learn_mod_wheel_params
         # - - - - - Attributes to be set by the child concrete class - - - - -

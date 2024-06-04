@@ -9,6 +9,7 @@
 import typing as tp
 
 import torch
+from torch import nn
 
 
 def world_size():
@@ -40,3 +41,17 @@ def average_metrics(metrics: tp.Dict[str, float], count=1.):
     all_reduce(tensor)
     averaged = (tensor[:-1] / tensor[-1]).cpu().tolist()
     return dict(zip(keys, averaged))
+
+
+def get_parallel_devices(main_cuda_device_idx: int):
+    if torch.cuda.device_count() == 0:
+        raise NotImplementedError()
+    elif torch.cuda.device_count() == 1:
+        output_device = 'cuda:0'
+        device_ids = [0]
+    else:
+        output_device = torch.device(f'cuda:{main_cuda_device_idx}')
+        device_ids = [i for i in range(torch.cuda.device_count()) if i != main_cuda_device_idx]
+        device_ids.insert(0, main_cuda_device_idx)
+
+    return output_device, device_ids

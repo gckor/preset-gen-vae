@@ -17,18 +17,18 @@ from utils.config import _Config  # Empty class - to ease JSON serialization of 
 
 
 model = _Config()
-model.name = 'amae100_nomask'
+model.name = 'debug'
 model.run_name = 'kfold0'  # run: different hyperparams, optimizer, etc... for a given model
 model.allow_erase_run = True  # If True, a previous run with identical name will be erased before training
 # See model/encoder.py to view available architectures. Decoder architecture will be as symmetric as possible.
-model.encoder_architecture = 'audiomae_pretrained' # 'speccnn8l1_bn', 'seanet', 'audiomae_pretrained'
+model.encoder_architecture = 'audiomae' # 'speccnn8l1_bn', 'seanet', 'audiomae_pretrained'
 # Default: Same with the encoder architecture. Set to None to disable the decoder and reconstruction loss.
 model.decoder_architecture = None # 'speccnn8l1_bn', 'seanet', None
 model.latent_quantization = None # 'rvq', None
 model.input_type = 'spectrogram' # 'waveform', 'spectrogram'
 model.stochastic_latent = False # True (VAE), False (deterministic AE)
 model.contrastive = False
-# Possible values: 'flow_realnvp_6l300', 'flow_realnvp_4l180', 'mlp_4l1024', ... (configurable numbers of layers and neurons)
+# Possible values: 'flow_realnvp_6l300', 'mlp_4l1024', ... (configurable numbers of layers and neurons)
 model.params_regression_architecture = 'mlp_4l1024'
 model.params_reg_softmax = False  # Apply softmax in the flow itself? If False: cat loss can be BCE or CCE
 # Spectrogram size cannot easily be modified - all CNN decoders should be re-written
@@ -82,7 +82,7 @@ model.dataset_synth_args = (None, [1, 2, 3, 4, 5, 6])
 # Directory for saving metrics, samples, models, etc... see README.md
 model.logs_root_dir = "/exp_logs/preset-gen-vae"  # Path from this directory
 model.dataset_dir = "/dataset/preset-gen-vae/numcatpp"
-model.pretrained_dir = "/exp_logs/preset-gen-vae/audiomae/default/checkpoint-100.pth"
+model.pretrained_dir = '/exp_logs/preset-gen-vae/audiomae/default/checkpoint-300.pth'
 
 
 train = _Config()
@@ -91,7 +91,7 @@ train.minibatch_size = 32 # 160
 train.main_cuda_device_idx = 1  # CUDA device for nonparallel operations (losses, ...)
 train.test_holdout_proportion = 0.2
 train.k_folds = 5
-train.current_k_fold = 1 # 0, 1, 2, 3, 4
+train.current_k_fold = 0 # 0, 1, 2, 3, 4
 train.start_epoch = 0  # 0 means a restart (previous data erased). If > 0: will load start_epoch-1 checkpoint
 # Total number of epochs (including previous training epochs)
 train.n_epochs = 300  # See update_dynamic_config_params().  16k sample dataset: set to 700

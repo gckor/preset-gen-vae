@@ -23,19 +23,21 @@ __x_tick_font_size = 8
 
 
 def plot_train_spectrograms(x_in, x_out, sample_info, dataset: PresetDataset,
-                            model_config, train_config):
+                            config):
     """ Wrapper for plot_spectrograms, which is made to be easily used during training/validation. """
     if dataset.multichannel_stacked_spectrograms:  # Plot only 1 preset ID, multiple midi notes
-        midi_notes = model_config.midi_notes
+        midi_notes = config.dataset.midi_notes
         presets_UIDs = torch.ones((sample_info.shape[0],), dtype=sample_info.dtype, device=sample_info.device)
         presets_UIDs *= sample_info[0, 0]
     else:  # Plot multiple preset IDs, possibly also different midi notes for different 1-ch spectrograms
         midi_notes = [(sample_info[i, 1].item(), sample_info[i, 2].item()) for i in range(sample_info.shape[0])]
         presets_UIDs = sample_info[:, 0]
+
+    max_nb_specs = max(config.train.logged_samples_count, len(config.dataset.midi_notes))
     return plot_spectrograms(x_in, x_out, presets_UIDs=presets_UIDs,
                              midi_notes=midi_notes,
                              multichannel_spectrograms=dataset.multichannel_stacked_spectrograms,
-                             plot_error=(x_out is not None), max_nb_specs=train_config.logged_samples_count,
+                             plot_error=(x_out is not None), max_nb_specs=max_nb_specs,
                              add_colorbar=True)
 
 

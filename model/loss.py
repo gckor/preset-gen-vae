@@ -201,7 +201,7 @@ class QuantizedNumericalParamsLoss:
     This loss breaks the computation path (.backward cannot be applied to it).
     """
     def __init__(self, idx_helper: PresetIndexesHelper, numerical_loss=nn.MSELoss(),
-                 limited_vst_params_indexes: Optional[Sequence] = None):
+                 reduce: bool = True, limited_vst_params_indexes: Optional[Sequence] = None):
         """
 
         :param idx_helper:
@@ -218,11 +218,13 @@ class QuantizedNumericalParamsLoss:
         self.num_params_count = len(self.idx_helper.num_idx_learned_as_num)\
                                 + len(self.idx_helper.num_idx_learned_as_cat)
         self.limited_vst_params_indexes = limited_vst_params_indexes
+        self.reduce = reduce
 
     def __call__(self, u_out: torch.Tensor, u_in: torch.Tensor):
         """ Returns the loss for numerical VST params only (searched in u_in and u_out).
         Learnable representations can be numerical (in [0.0, 1.0]) or one-hot categorical.
         The type of representation has been stored in self.idx_helper """
+        errors = dict()
         # Partial tensors (for final loss computation)
         minibatch_size = u_in.size(0)
         # pre-allocate tensors
@@ -245,6 +247,7 @@ class QuantizedNumericalParamsLoss:
                 cardinal = self.idx_helper.vst_param_cardinals[vst_idx]
                 param_batch = torch.round(param_batch * (cardinal - 1.0)) / (cardinal - 1.0)
             u_out_num[:, cur_num_tensors_col] = param_batch
+            errors[vst_idx] = self.numerical_loss(u_in_num[:, cur_num_tensors_col], u_out_num[:, cur_num_tensors_col]).item()
             cur_num_tensors_col += 1
         # convert one-hot encoded learnable representations of (quantized) numerical VST params
         for vst_idx, learn_indexes in self.idx_helper.num_idx_learned_as_cat.items():
@@ -257,6 +260,7 @@ class QuantizedNumericalParamsLoss:
             u_in_num[:, cur_num_tensors_col] = in_classes / (cardinal-1.0)
             out_classes = torch.argmax(u_out[:, learn_indexes], dim=-1).detach().type(torch.float)
             u_out_num[:, cur_num_tensors_col] = out_classes / (cardinal-1.0)
+            errors[vst_idx] = self.numerical_loss(u_in_num[:, cur_num_tensors_col], u_out_num[:, cur_num_tensors_col]).item()
             cur_num_tensors_col += 1
         # Final size checks
         if self.limited_vst_params_indexes is None:
@@ -264,7 +268,11 @@ class QuantizedNumericalParamsLoss:
         else:
             pass  # No size check for limited params (a list with unlearned and/or cat params can be provided)
             #  assert cur_num_tensors_col == len(self.limited_vst_params_indexes)
-        return self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input
+        
+        if self.reduce:
+            return self.numerical_loss(u_out_num, u_in_num)  # Positive diff. if output > input
+        else:
+            return errors, self.numerical_loss(u_out_num, u_in_num)
 
 
 

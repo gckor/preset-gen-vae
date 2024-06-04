@@ -23,8 +23,7 @@ def get_model_run_directory(root_path, config):
 def get_model_checkpoint(root_path: pathlib.Path, config, epoch, device=None):
     """ Returns the path to a .tar saved checkpoint, or prints all available checkpoints and raises an exception
     if the required epoch has no saved .tar checkpoint. """
-    checkpoints_dir = root_path.joinpath(config.model.name)\
-        .joinpath(config.model.run_name).joinpath('checkpoints')
+    checkpoints_dir = root_path.joinpath(config.model.name, config.model.run_name, 'checkpoints')
     checkpoint_path = checkpoints_dir.joinpath('{:05d}.tar'.format(epoch))
     try:
         if device is None:
@@ -39,8 +38,7 @@ def get_model_checkpoint(root_path: pathlib.Path, config, epoch, device=None):
 
 
 def get_model_last_checkpoint(root_path: pathlib.Path, config, verbose=True, device=None):
-    checkpoints_dir = root_path.joinpath(config.model.name)\
-        .joinpath(config.model.run_name).joinpath('checkpoints')
+    checkpoints_dir = root_path.joinpath(config.model.name, config.model.run_name, 'checkpoints')
     available_epochs = [int(f.stem) for f in checkpoints_dir.glob('*.tar')]
     assert len(available_epochs) > 0  # At least 1 checkpoint should be available
     if verbose:

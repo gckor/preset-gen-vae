@@ -13,15 +13,7 @@ eval.start_datetime = datetime.datetime.now().isoformat()
 
 # Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
 eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
-                     'CNNMLP/kfold0',
-                     'CNNMLP/kfold1',
-                     'CNNMLP_deter/kfold0',
-                     'CNNMLP_deter/kfold1',
-                     'CNNMLP_deter_wo_dec/kfold0',
-                     'CNNMLP_deter_wo_dec/kfold1',
-                     'contra_cnnmlp_deter/kfold0',
-                     'contra_cnnmlp_deter/kfold1',
-                     'FlFl/kfold0',
+                     'FlFl/kfold0-s2',
                      ]
 eval.dataset = 'test'  # Do not use 'test' dataset during models development
 eval.override_previous_eval = False  # If True, all models be re-evaluated (might be very long)
@@ -31,7 +23,6 @@ eval.device = 'cuda'
 # Don't use too many cores, numpy uses multi-threaded MKL (in each process)
 eval.multiprocess_cores_ratio = 0.1  # ratio of CPU cores to be used (if 1.0: use all os.cpu_count() cores)
 eval.verbosity = 2
-eval.load_from_archives = False  # Load from ./saved_archives instead of ./saved
 
 eval.sampling_rate = 22050 # Same value with the trained model config
 eval.logs_root_dir = '/exp_logs/preset-gen-vae'

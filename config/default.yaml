@@ -66,17 +66,13 @@ model:
   forward_controls_loss: True
   stochastic_latent: False
   latent_quantization: null
-  encoder_architecture: speccnn8l1_bn # speccnn8l1_bn / audiomae
+  encoder_architecture: SpectrogramCNN # SpectrogramCNN / MaskedAutoencoderViT / SEANetEncoder
   decoder_architecture: null # speccnn8l1_bn / null
   contrastive: False
   pretrained_dir: /exp_logs/preset-gen-vae/audiomae/default/checkpoint-300.pth
-  encoder_kwargs:
-    img_size: [257, 347]
-    stochastic_latent: False
-    patch_size: 16
-    depth: 12
-    num_heads: 12
+  encoder_kwargs: null
 
+  
 verbosity: 1
 synth_params_count: -1
 learnable_params_tensor_length: -1

@@ -9,6 +9,7 @@ See train_queue.py for enqueued training runs
 """
 
 from pathlib import Path
+from tqdm import tqdm
 
 import mkl
 import torch
@@ -29,8 +30,7 @@ import utils.profile
 import utils.figures
 import utils.exception
 from utils.distrib import get_parallel_devices
-from tqdm import tqdm
-from omegaconf import OmegaConf
+from config import load_config
 
 
 def train_config():
@@ -39,7 +39,7 @@ def train_config():
     Some attributes from config.py might be dynamically changed by train_queue.py (or this script,
     after loading the datasets) - so they can be different from what's currently written in config.py.
     """
-    config = OmegaConf.load('config.yaml')
+    config = load_config()
     dataset = data.build.get_dataset(config)
     dataloader = data.build.get_split_dataloaders(config, dataset)
     root_path = Path(config.logs_root_dir)

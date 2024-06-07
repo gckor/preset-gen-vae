@@ -88,8 +88,8 @@ class SEANetEncoder(nn.Module):
         disable_norm_outer_blocks (int): Number of blocks for which we don't apply norm.
             For the encoder, it corresponds to the N first blocks.
     """
-    def __init__(self, channels: int = 1, dimension: int = 128, n_filters: int = 32, n_residual_layers: int = 1,
-                 ratios: tp.List[int] = [8, 5, 4, 2], activation: str = 'ELU', activation_params: dict = {'alpha': 1.0},
+    def __init__(self, channels: int = 1, dimension: int = 610, n_filters: int = 8, n_residual_layers: int = 1,
+                 ratios: tp.List[int] = [8, 4, 4, 2], activation: str = 'ELU', activation_params: dict = {'alpha': 1.0},
                  norm: str = 'weight_norm', norm_params: tp.Dict[str, tp.Any] = {}, kernel_size: int = 7,
                  last_kernel_size: int = 7, residual_kernel_size: int = 3, dilation_base: int = 2, causal: bool = False,
                  pad_mode: str = 'constant', true_skip: bool = True, compress: int = 2, lstm: int = 2,

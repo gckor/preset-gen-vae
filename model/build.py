@@ -8,7 +8,6 @@ Decomposed into numerous small function for easier module-by-module debugging.
 from model import VAE, encoder, decoder, extendedAE, regression, seanet, encodec, lstm
 from model.quantization import vq
 from model.audiomae import misc
-from model.audiomae.models_mae import MaskedAutoencoderViT
 from model.encodec.model import EncodecModel
 import numpy as np
 import torch.nn as nn
@@ -28,39 +27,14 @@ def build_encoder_and_decoder_models(config):
         config.model.spectrogram_size[1]
     )
 
-    if config.model.concat_midi_to_z:
-        enc_z_length = config.model.dim_z - 2
-    else:
-        enc_z_length = config.model.dim_z
+    encoder_model = getattr(encoder, config.model.encoder_architecture)(**config.model.encoder_kwargs)
 
-    if config.model.encoder_architecture == 'seanet':
-        encoder_model = seanet.SEANetEncoder(dimension=config.model.dim_z, n_filters=8, ratios=[8, 4, 4, 2])
-    elif config.model.encoder_architecture == 'encodec_pretrained':
-        encodec_pretrained = EncodecModel.encodec_model_24khz()
-        encoder_model = encodec_pretrained.encoder
-    elif config.model.encoder_architecture.startswith('audiomae'):
-        encoder_model = MaskedAutoencoderViT(
-            img_size=config.model.spectrogram_size,
-            stochastic_latent=config.model.stochastic_latent,
-        )
-        if 'pretrained' in config.model.encoder_architecture:
-            checkpoint = config.model.pretrained_dir
-            misc.load_model(checkpoint, encoder_model)
-    else:
-        encoder_model = encoder.SpectrogramEncoder(
-            config.model.encoder_architecture,
-            enc_z_length,
-            config.model.input_tensor_size,
-            config.train.fc_dropout,
-            output_bn=(config.train.latent_flow_input_regularization.lower() == 'bn'),
-            deepest_features_mix=config.model.stack_specs_deepest_features_mix,
-            stochastic_latent=config.model.stochastic_latent
-        )
+    if 'pretrained' in config.model.encoder_architecture:
+        checkpoint = config.model.pretrained_dir
+        misc.load_model(checkpoint, encoder_model)
         
     if config.model.decoder_architecture == 'seanet':
         decoder_model = seanet.SEANetDecoder(dimension=config.model.dim_z, n_filters=16, ratios=[8, 4, 4, 2])
-    elif config.model.decoder_architecture == 'encodec_pretrained':
-        decoder_model = encodec_pretrained.decoder
     elif config.model.decoder_architecture is None:
         print("Decoder is not included in the architecture")
         decoder_model = None

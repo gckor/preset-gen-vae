@@ -1,0 +1,8 @@
+model:
+  encoder_kwargs:
+    embed_dim: 612
+    img_size: [257, 347]
+    stochastic_latent: False
+    patch_size: 16
+    depth: 12
+    num_heads: 12

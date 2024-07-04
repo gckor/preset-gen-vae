@@ -416,6 +416,8 @@ class Dexed:
                 return 8
             elif (param_index % 22) == (44 % 22):  # OPx Switch (off/on)
                 return 2
+            elif (param_index % 22) == (36 % 22):  # OPx Break Point
+                return 34
             else:  # all other are considered non-discrete  # TODO return 100
                 return -1
         else:  # all other are considered non-discrete

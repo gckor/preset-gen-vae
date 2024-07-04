@@ -24,16 +24,20 @@ from data.preset import PresetsParams, PresetIndexesHelper
 
 
 class PresetDataset(torch.utils.data.Dataset, ABC):
-    def __init__(self, note_duration,
-                 n_fft, fft_hop,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
-                 midi_notes=((60, 100),),
-                 multichannel_stacked_spectrograms=False,
-                 n_mel_bins=-1,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
-                 learn_mod_wheel_params=False,
-                 dataset_dir=None,
-                 sample_rate=22050
-                 ):
+    def __init__(
+        self,
+        note_duration,
+        n_fft,
+        fft_hop,  # ftt 1024 hop=512: spectrogram is approx. the size of 5.0s@22.05kHz audio
+        midi_notes=((60, 100),),
+        multichannel_stacked_spectrograms=False,
+        n_mel_bins=-1,
+        normalize_audio=False,
+        spectrogram_min_dB=-120.0,
+        spectrogram_normalization='min_max',
+        dataset_dir=None,
+        sample_rate=22050,
+    ):
         """
         Abstract Base Class for any synthesizer presets dataset.
         :param note_duration: Tuple: MIDI Note (on_duration, off_duration) in seconds
@@ -49,8 +53,6 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         :param spectrogram_min_dB:  Noise-floor threshold value for log-scale spectrograms
         :param spectrogram_normalization: 'min_max' to get output spectrogram values in [-1, 1], or 'mean_std'
             to get zero-mean unit-variance output spectrograms. None to disable normalization.
-        :param learn_mod_wheel_params: Indicates whether parameters related to the MIDI modulation wheel should
-            be learned or not.
         """
         self.note_duration = note_duration
         self.n_fft = n_fft
@@ -61,7 +63,6 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         self._multichannel_stacked_spectrograms = multichannel_stacked_spectrograms
         self.n_mel_bins = n_mel_bins
         self.normalize_audio = normalize_audio
-        self.learn_mod_wheel_params = learn_mod_wheel_params
         # - - - - - Attributes to be set by the child concrete class - - - - -
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)

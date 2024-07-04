@@ -1,20 +1,17 @@
-import config
 import data.build
+from config import load_config
 
 import h5py
-from tqdm import tqdm
 import os
-import json
+from tqdm import tqdm
 
 
-config_dict = {'model': config.model.__dict__, 'train': config.train.__dict__}
-with open(os.path.join(config.model.dataset_dir, 'config.json'), 'w') as f:
-    json.dump(config_dict, f)
-
-dataset = data.build.get_dataset(config.model, config.train)
+config = load_config()
+dataset = data.build.get_dataset(config)
+os.makedirs(config.dataset.dataset_dir, exist_ok=True)
 
 # Create dataset comprised of waveform, spectrograms, synth parameters, sample info, and labels
-with h5py.File(os.path.join(config.model.dataset_dir, 'dataset.h5py'), 'x') as f:
+with h5py.File(os.path.join(config.dataset.dataset_dir, 'dataset.h5py'), 'x') as f:
     for i in tqdm(range(len(dataset))):
         waveform, spectrogram, synth_param, sample_info, label = dataset.generate_data(i)
         preset_UID, pitch, velocity = sample_info[0], sample_info[1], sample_info[2]

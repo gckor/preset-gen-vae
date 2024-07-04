@@ -19,7 +19,7 @@ def get_dataset(config):
         print(full_dataset.preset_indexes_helper.short_description)
 
     config.synth_params_count = full_dataset.learnable_params_count
-    config.learnable_params_tensor_length = full_dataset.learnable_params_tensor_length
+    config.learnable_params_tensor_length = full_dataset.preset_indexes_helper._learnable_preset_size
     return full_dataset
 
 

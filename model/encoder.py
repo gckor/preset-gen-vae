@@ -1,11 +1,15 @@
 
 import torch
 import torch.nn as nn
+from typing import Dict, Any, List
 from functools import partial
 from timm.models.vision_transformer import Block
 from timm.models.swin_transformer import SwinTransformerBlock
 
+from data.preset import PresetIndexesHelper
 from model import layer
+from model.layer import Transformer
+from model.position_encoding import PositionEmbeddingSine, PositionalEncoding1D
 from model.audiomae.pos_embed import get_2d_sincos_pos_embed, get_2d_sincos_pos_embed_flexible
 from model.audiomae.patch_embed import PatchEmbed_org
 
@@ -44,7 +48,7 @@ class SpectrogramCNN(nn.Module):
         self.stochastic_latent = stochastic_latent
         # 2048 if single-ch, 1024 if multi-channel 4x4 mixer (to compensate for the large number of added params)
         self.spectrogram_channels = spectrogram_channels
-        self.mixer_1x1conv_ch = 1024 if (self.spectrogram_channels > 1) else 2048
+        self.mixer_1x1conv_ch = 2048 # if (self.spectrogram_channels == 1) else 1024
         self.fc_dropout = fc_dropout
 
         # 1) Main CNN encoder (applied once per input spectrogram channel) - - - - -
@@ -63,7 +67,7 @@ class SpectrogramCNN(nn.Module):
                 batch_norm=None
             )
         else:  # mixing conv layer: deepest-1 (4x4 kernel)
-            n_4x4_ch = 512 if self.spectrogram_channels == 1 else 768
+            n_4x4_ch = 512 # if self.spectrogram_channels == 1 else 768
             self.features_mixer_cnn = nn.Sequential(
                 layer.Conv2D(
                     256 * self.spectrogram_channels,
@@ -86,7 +90,7 @@ class SpectrogramCNN(nn.Module):
         # Automatic CNN output tensor size inference
         with torch.no_grad():
             dummy_shape = [1] + [spectrogram_channels] + spectrogram_size
-            dummy_spectrogram = torch.zeros(dummy_shape)
+            dummy_spectrogram = torch.zeros(tuple(dummy_shape))
             self.cnn_out_size = self._forward_cnns(dummy_spectrogram).size()
         cnn_out_items = self.cnn_out_size[1] * self.cnn_out_size[2] * self.cnn_out_size[3]
         mlp_out_dim = self.dim_z * 2 if self.stochastic_latent else self.dim_z
@@ -560,3 +564,239 @@ class MaskedAutoencoderViT(nn.Module):
         pred = self.forward_decoder(emb_enc, ids_restore)
         loss_recon = self.forward_loss(x, pred, mask, norm_pix_loss=self.norm_pix_loss)
         return loss_recon
+
+
+class Head(nn.Module):
+    def __init__(self, in_dim, out_dim, architecture: List[int] = [1024, 1024, 1024, 1024], dropout_p: int = 0.4):
+        super().__init__()
+        self.head = nn.Sequential()
+
+        for i, hidden_dim in enumerate(architecture):
+            if i == 0:
+                self.head.add_module(f'fc{i + 1}', nn.Linear(in_dim, hidden_dim))
+            else:
+                self.head.add_module(f'fc{i + 1}', nn.Linear(hidden_dim, hidden_dim))
+            
+            if i < (len(architecture) - 1):
+                self.head.add_module(f'bn{i + 1}', nn.BatchNorm1d(hidden_dim))
+                self.head.add_module(f'drp{i + 1}', nn.Dropout(dropout_p))
+            
+            self.head.add_module(f'act{i + 1}', nn.ReLU())
+        
+        self.head.add_module(f'fc{len(architecture) + 1}', nn.Linear(hidden_dim, out_dim))
+        self.head.add_module('act', nn.Hardtanh(min_val=0.0, max_val=1.0))
+
+    def forward(self, x):
+        return self.head(x)
+
+
+class CNNBackbone(nn.Module):
+    """
+    CNN feature extractor for the backbone of Transformer encoder
+    """
+
+    def __init__(self, spectrogram_channels: int = 1, out_dim: int = 256):
+        super().__init__()
+        act = nn.LeakyReLU
+        act_p = 0.1  # Activation param
+        self.enc_nn = nn.Sequential(
+            layer.Conv2D(
+                spectrogram_channels, 16, [5, 5], [2, 2], 2, [1, 1],
+                batch_norm=None, activation=act(act_p), name_prefix='enc1'
+            ),
+            layer.Conv2D(
+                16, 32, [4, 4], [2, 2], 2, [1, 1],
+                activation=act(act_p), name_prefix='enc2'
+            ),
+            layer.Conv2D(
+                32, 64, [4, 4], [2, 2], 2, [1, 1],
+                activation=act(act_p), name_prefix='enc3'
+            ),
+            layer.Conv2D(
+                64, 128, [4, 4], [2, 2], 2, [1, 1],
+                activation=act(act_p), name_prefix='enc4'
+            ),
+            layer.Conv2D(
+                128, out_dim, [4, 4], [2, 2], 2, [1, 1],
+                activation=act(act_p), name_prefix='enc5'
+            ),
+            # layer.Conv2D(
+            #     256, self.out_dim, [4, 4], [2, 2], 2, [1, 1],
+            #     activation=act(act_p), name_prefix='enc6'
+            # ),
+        )
+
+    def forward(self, x_spectrogram):
+        return self.enc_nn(x_spectrogram)
+    
+
+class SynthTR(nn.Module):
+    """
+    SynthTR consists of CNN backbone, Transformer encoder and Transformer decoder.
+    Output of the Transformer encoder serves as keys and values of the decoder.
+    The transformer decoder receives learnable queries for synthesizer parameters.
+    """
+
+    def __init__(
+            self,
+            preset_idx_helper: PresetIndexesHelper,
+            d_model: int = 256,
+            spectrogram_channels: int = 1,
+            num_queries: int = 144,
+            transformer_kwargs: Dict[str, Any] = {},
+        ):
+        super().__init__()
+        self.out_dim = preset_idx_helper._learnable_preset_size
+        self.cat_idx, self.num_idx = self._get_learnable_idx(preset_idx_helper)
+
+        self.backbone = CNNBackbone(spectrogram_channels, d_model)
+        self.enc_pos_embed = PositionEmbeddingSine(d_model // 2)
+        self.query_pos_embed = PositionalEncoding1D(d_model, num_queries)
+        self.transformer = Transformer(num_queries, d_model, **transformer_kwargs)
+
+        # Projection layers
+        self.proj = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(d_model, self.out_dim),
+            nn.Tanh(),
+        )
+
+        # Fullsep
+        # projections = []
+
+        # Shallow
+        # for i in range(len(cat_idx)):
+        #     projections.append(
+        #         nn.Sequential(
+        #             nn.Dropout(0.3),
+        #             nn.Linear(dim_z, len(cat_idx[i])),
+        #             nn.Tanh(),
+        #         )
+        #     )
+
+        # for i in range(len(num_idx)):
+        #     projections.append(
+        #         nn.Sequential(
+        #             nn.Dropout(0.3),
+        #             nn.Linear(dim_z, 1),
+        #             nn.Tanh(),
+        #         )
+        #     )
+
+
+        # Deep
+        # for i in range(len(cat_idx)):
+        #     projections.append(
+        #         nn.Sequential(
+        #             nn.Dropout(0.3),
+        #             nn.Linear(dim_z, 512),
+        #             nn.BatchNorm1d(512),
+        #             nn.LeakyReLU(0.1),
+        #             nn.Dropout(0.3),
+        #             nn.Linear(512, len(cat_idx[i])),
+        #             nn.Tanh(),
+        #         )
+        #     )
+
+        # for i in range(len(num_idx)):
+        #     projections.append(
+        #         nn.Sequential(
+        #             nn.Dropout(0.3),
+        #             nn.Linear(dim_z, 512),
+        #             nn.BatchNorm1d(512),
+        #             nn.LeakyReLU(0.1),
+        #             nn.Dropout(0.3),
+        #             nn.Linear(512, 1),
+        #             nn.Tanh(),
+        #         )
+        #     )
+        
+        # self.projections = nn.ModuleList(projections)
+                
+
+        # Deep projection
+        # self.mlp = nn.Sequential(
+        #     nn.Dropout(0.3),
+        #     nn.Linear(256, 512), #36864(dec flatten) #27648 (enc flatten) # 256(gap)
+        #     nn.BatchNorm1d(512),
+        #     nn.LeakyReLU(0.1),
+        #     nn.Dropout(0.3),
+        #     nn.Linear(512, 610),
+        #     nn.Tanh(),
+        # )
+
+    def forward(self, spectrogram):
+        features = self.backbone(spectrogram)
+        enc_pos_embed = self.enc_pos_embed(features)
+        query_pos_embed = self.query_pos_embed(features)
+
+        # only encoder
+        # enc_out = self.transformer(features, query_pos_embed, pos_embed)
+
+        # # Flatten
+        # enc_out = enc_out.flatten(1)
+
+        # Global Average Pool
+        # enc_out = enc_out.flatten(2).mean(dim=2) 
+        
+        # out = self.mlp(enc_out)
+        # out = 0.5 * (out + 1.) # Tanh
+
+        # out = self.head(out)
+
+        # decoder
+        dec_out = self.transformer(features, query_pos_embed, enc_pos_embed)
+
+        # Flatten
+        # dec_out = dec_out.flatten(1)
+
+        # GAP
+        # dec_out = dec_out.mean(dim=1)
+
+        # Fullsep
+        # batch_size, n_query, n_channel = dec_out.shape
+        # out = torch.zeros((batch_size, 610), device=dec_out.device)
+
+        # for i in range(len(self.cat_idx)):
+        #     out[:, self.cat_idx[i]] = self.projections[i](dec_out[:, i, :])
+
+        # for i in range(len(self.cat_idx), n_query):
+        #     out[:, self.num_idx[i - len(self.cat_idx)]] = self.projections[i](dec_out[:, i, :]).squeeze()
+
+        # out = 0.5 * (out + 1.) # Tanh
+        
+
+        # # Sep-head
+        batch_size, n_query, d_model = dec_out.shape
+        dec_out = dec_out.reshape(-1, d_model)
+        
+        # # Projection
+        dec_out = self.proj(dec_out)
+        dec_out = 0.5 * (dec_out + 1.) # Tanh
+
+        # # Sep-head
+        dec_out = dec_out.reshape(batch_size, n_query, -1)
+        cat_out = dec_out[:, :len(self.cat_idx), :]
+        num_out = dec_out[:, len(self.cat_idx):, :]
+
+        out = torch.zeros((batch_size, self.out_dim), device=dec_out.device)
+
+        for i in range(len(self.cat_idx)):
+            out[:, self.cat_idx[i]] = cat_out[:, i, self.cat_idx[i]]
+
+        for j in range(len(self.num_idx)):
+            out[:, self.num_idx[j]] = num_out[:, j, self.num_idx[j]]
+
+        return out
+    
+    def _get_learnable_idx(self, preset_idx_helper):
+        full_idx = preset_idx_helper.full_to_learnable
+        cat_idx, num_idx = [], []
+
+        for idx in full_idx:
+            if isinstance(idx, list):
+                cat_idx.append(idx)
+            elif isinstance(idx, int):
+                num_idx.append(idx)
+
+        return cat_idx, num_idx

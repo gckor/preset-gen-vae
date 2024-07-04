@@ -11,6 +11,7 @@ import h5py
 from typing import Optional, Iterable
 import multiprocessing
 from datetime import datetime
+from typing import List, Tuple, Any
 
 import torch
 import torch.utils
@@ -27,19 +28,26 @@ from data.preset import DexedPresetsParams, PresetIndexesHelper
 
 
 class DexedDataset(abstractbasedataset.PresetDataset):
-    def __init__(self, note_duration, n_fft, fft_hop,
-                 midi_notes=((60, 100),), multichannel_stacked_spectrograms=False,
-                 n_mel_bins=-1,
-                 normalize_audio=False, spectrogram_min_dB=-120.0, spectrogram_normalization='min_max',
-                 algos=None, operators=None,
-                 vst_params_learned_as_categorical: Optional[str] = None,
-                 restrict_to_labels=None, constant_filter_and_tune_params=True,
-                 prevent_SH_LFO=False,  # TODO re-implement
-                 learn_mod_wheel_params=True,
-                 check_constrains_consistency=True,
-                 dataset_dir=None,
-                 sample_rate=22050,
-                 ):
+    def __init__(
+        self,
+        note_duration: List[float],
+        n_fft: int,
+        fft_hop: int,
+        midi_notes: Tuple[Tuple[int, int]] = ((60, 100),),
+        multichannel_stacked_spectrograms: bool = False,
+        n_mel_bins: int = -1,
+        normalize_audio: bool = False,
+        spectrogram_min_dB: float = -120.0,
+        spectrogram_normalization: str = 'min_max',
+        algos: Optional[List[int]] = None,
+        operators: Optional[List[int]] = None,
+        vst_params_learned_as_categorical: Optional[str] = None,
+        restrict_to_labels: Optional[List[str]] = None,
+        constant_filter_and_tune_params: bool = True,
+        check_constrains_consistency: bool = True,
+        dataset_dir: Optional[str] = None,
+        sample_rate: int = 22050,
+    ):
         """
         Allows access to Dexed preset values and names, and generates spectrograms and corresponding
         parameters values. Can manage a reduced number of synth parameters (using default values for non-
@@ -57,47 +65,52 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         :param restrict_to_labels: List of strings. If not None, presets of this dataset will be selected such
             that they are tagged with at least one of the given labels.
         :param constant_filter_and_tune_params: if True, the main filter and the main tune settings are default
-        :param prevent_SH_LFO: if True, replaces the SH random LFO by a square-wave deterministic LFO
         :param check_constrains_consistency: Set to False when this dataset instance is used to pre-render
             audio files
         """
-        super().__init__(note_duration, n_fft, fft_hop, midi_notes, multichannel_stacked_spectrograms,
-                         n_mel_bins,
-                         normalize_audio, spectrogram_min_dB, spectrogram_normalization, learn_mod_wheel_params,
-                         dataset_dir, sample_rate)
-        assert learn_mod_wheel_params  # Must be learned, because LFO modulation also depends on these params
-        self.prevent_SH_LFO = prevent_SH_LFO
-        assert prevent_SH_LFO is False  # TODO re-implement S&H enable/disable
+        super().__init__(
+            note_duration,
+            n_fft,
+            fft_hop,
+            midi_notes,
+            multichannel_stacked_spectrograms,
+            n_mel_bins,
+            normalize_audio,
+            spectrogram_min_dB,
+            spectrogram_normalization,
+            dataset_dir,
+            sample_rate
+        )
         self.constant_filter_and_tune_params = constant_filter_and_tune_params
         if check_constrains_consistency:  # pre-rendered audio consistency
             self.check_audio_render_constraints_file()
         self.algos = algos if algos is not None else []
         self._operators = operators if operators is not None else [1, 2, 3, 4, 5, 6]
         self.restrict_to_labels = restrict_to_labels
+
         # Full SQLite DB read and temp storage in np arrays
         dexed_db = dexed.PresetDatabase()
         self._total_nb_presets = dexed_db.presets_mat.shape[0]
         self._total_nb_params = dexed_db.presets_mat.shape[1]
         self._param_names = dexed_db.get_param_names()
-        # - - - Constraints on parameters, learnable VST parameters - - -
+
+        # Constraints on parameters, learnable VST parameters
         self.learnable_params_idx = list(range(0, dexed_db.presets_mat.shape[1]))
+        
         if self.constant_filter_and_tune_params:  # (see dexed_db_explore.ipynb)
             for vst_idx in [0, 1, 2, 3, 13]:
                 self.learnable_params_idx.remove(vst_idx)
+        
         for i_op in range(6):  # Search for disabled operators
-            if not (i_op+1) in self._operators:  # If disabled: we remove all corresponding learnable params
+            if (i_op + 1) not in self._operators:  # If disabled: we remove all corresponding learnable params
                 for vst_idx in range(21):  # Don't remove the 22nd param (OP on/off selector) yet
-                    self.learnable_params_idx.remove(23 + 22*i_op + vst_idx)  # idx 23 is the first param of op 1
+                    self.learnable_params_idx.remove(23 + 22 * i_op + vst_idx)  # idx 23 is the first param of op 1
+        
         # Oscillators can be enabled or disabled, but OP SWITCHES are never learnable parameters
         for col in [44, 66, 88, 110, 132, 154]:
             self.learnable_params_idx.remove(col)
-        # Mod-wheel related params?
-        if not self.learn_mod_wheel_params:
-            for vst_param_idx in dexed.Dexed.get_mod_wheel_related_param_indexes():
-                # Some might have been removed already (deactivated operators)
-                if vst_param_idx in self.learnable_params_idx:
-                    self.learnable_params_idx.remove(vst_param_idx)
-        # - - - Valid presets - UIDs of presets, and not their database row index - - -
+
+        # Valid presets - UIDs of presets, and not their database row index
         # Select valid presets by algorithm
         if len(self.algos) == 0:  # All presets are valid
             self.valid_preset_UIDs = dexed_db.all_presets_df["index_preset"].values
@@ -105,29 +118,35 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             if len(self.algos) == 1:
                 self.learnable_params_idx.remove(4)  # Algo parameter column idx
             valid_presets_row_indexes = dexed_db.get_preset_indexes_for_algorithms(self.algos)
-            self.valid_preset_UIDs = dexed_db.all_presets_df\
-                .iloc[valid_presets_row_indexes]['index_preset'].values
+            self.valid_preset_UIDs = dexed_db.all_presets_df.iloc[valid_presets_row_indexes]['index_preset'].values
+
         # Select valid presets by label. We build a list of list-indexes to remove
         if self.restrict_to_labels is not None:
             self.valid_preset_UIDs = [uid for uid in self.valid_preset_UIDs
                                       if any([self.is_label_included(l) for l in self.get_labels_name(uid)])]
-        # - - - DB class deleted (we need a low memory usage for multi-process dataloaders) - - -
+        
+        # DB class deleted (we need a low memory usage for multi-process dataloaders)
         del dexed_db
-        # - - - Parameters constraints, cardinality, indexes management, ... - - -
+        
+        # Parameters constraints, cardinality, indexes management, ...
         # Param cardinalities are stored - Dexed cardinality involves a short search which can be avoided
         # This cardinality is the LEARNING REPRESENTATION cardinality - will be used for categorical representations
         self._params_cardinality = np.asarray([dexed.Dexed.get_param_cardinality(idx)
                                                for idx in range(self.total_nb_params)])
         self._params_default_values = dict()
+
         # Algo cardinality is manually set. We consider an algo-limited DX7 to be a new synth
         if len(self.algos) > 0:  # len 0 means all algorithms are used
             self._params_cardinality[4] = len(self.algos)
         if len(self.algos) == 1:  # 1 algo: constrained constant param
             self._params_default_values[4] = (self.algos[0] - 1) / 31.0
+
         # cardinality 1 for constrained parameters (operators are always constrained)
         self._params_cardinality[[44, 66, 88, 110, 132, 154]] = np.ones((6,), dtype=np.int)
+       
         for op_i, op_switch_idx in enumerate([44, 66, 88, 110, 132, 154]):
-            self._params_default_values[op_switch_idx] = 1.0 if ((op_i+1) in self._operators) else 0.0
+            self._params_default_values[op_switch_idx] = 1.0 if ((op_i + 1) in self._operators) else 0.0
+       
         if self.constant_filter_and_tune_params:
             self._params_cardinality[[0, 1, 2, 3, 13]] = np.ones((5,), dtype=np.int)
             self._params_default_values[0] = 1.0
@@ -135,19 +154,17 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             self._params_default_values[2] = 1.0
             self._params_default_values[3] = 0.5
             self._params_default_values[13] = 0.5
-        if not self.learn_mod_wheel_params:
-            mod_vst_params_indexes = dexed.Dexed.get_mod_wheel_related_param_indexes()
-            self._params_cardinality[mod_vst_params_indexes] = np.ones((len(mod_vst_params_indexes),), dtype=np.int)
-            for vst_param_idx in mod_vst_params_indexes:
-                self._params_default_values[vst_param_idx] = 0.0  # Default: no modulation when MIDI mod wheel changes
-        # - - - None / Numerical / Categorical learnable status array - - -
+
+        # None / Numerical / Categorical learnable status array
         self._vst_param_learnable_model = list()
         num_vst_learned_as_cat_cardinal_threshold = None
+        
         if vst_params_learned_as_categorical is not None:
             if vst_params_learned_as_categorical.startswith('all<='):
                 num_vst_learned_as_cat_cardinal_threshold = int(vst_params_learned_as_categorical.replace('all<=', ''))
             else:
                 assert vst_params_learned_as_categorical == 'vst_cat'
+
         # We go through all VST params indexes
         for vst_idx in range(self.total_nb_params):
             if vst_idx not in self.learnable_params_idx:
@@ -289,7 +306,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             spectrograms.append(spectrogram)     
 
         return waveform.astype(np.float32), \
-            torch.stack(spectrograms).squeeze().numpy(), \
+            torch.stack(spectrograms).numpy(), \
             preset_params.get_learnable().squeeze().numpy(), \
             np.array([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=np.int32), \
             self.get_labels_tensor(preset_UID).numpy()
@@ -390,8 +407,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def write_audio_render_constraints_file(self):
         file_path = dexed.PresetDatabase._get_presets_folder().joinpath("audio_render_constraints_file.json")
         with open(file_path, 'w') as f:
-            json.dump({'constant_filter_and_tune_params': self.constant_filter_and_tune_params,
-                       'prevent_SH_LFO': self.prevent_SH_LFO}, f)
+            json.dump({'constant_filter_and_tune_params': self.constant_filter_and_tune_params}, f)
 
     def check_audio_render_constraints_file(self):
         """ Raises a RuntimeError if the constraints used to pre-rendered audio are different from
@@ -400,9 +416,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         with open(file_path, 'r') as f:
             constraints = json.load(f)
             if constraints['constant_filter_and_tune_params'] != self.constant_filter_and_tune_params:
-                raise RuntimeError()
-            if constraints['prevent_SH_LFO'] != self.prevent_SH_LFO:
-                raise RuntimeError()
+                raise RuntimeError()\
 
 
 

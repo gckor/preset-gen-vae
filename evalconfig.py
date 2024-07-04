@@ -13,9 +13,7 @@ eval.start_datetime = datetime.datetime.now().isoformat()
 
 # Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
 eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
-                     'FlFl_contra/kfold0-s1',
-                     'FlFl_contra/kfold0-s2',
-                     
+                     'SynthTR_fixpos_prenorm_gelu-sephead-proj-tanh-batch64/kfold0-s1',                     
                      ]
 eval.dataset = 'test'  # Do not use 'test' dataset during models development
 eval.override_previous_eval = False  # If True, all models be re-evaluated (might be very long)

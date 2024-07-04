@@ -168,7 +168,7 @@ class RunLogger:
 
     def write_model_summary(self, model, input_tensor_size, model_name):
         if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
-            description = torchinfo.summary(model, tuple(input_tensor_size), depth=5, device='cpu', verbose=0)
+            description = torchinfo.summary(model, tuple(input_tensor_size), depth=8, device='cpu', verbose=0)
             
             with open(self.log_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
                 f.write(description.__str__())

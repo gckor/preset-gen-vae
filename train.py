@@ -12,10 +12,12 @@ from pathlib import Path
 from tqdm import tqdm
 
 import mkl
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
+
 
 import model.loss
 import model.build
@@ -124,9 +126,6 @@ def train_config():
                                                                           numerical_loss=nn.MSELoss(reduction='mean'))
     controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(dataset.preset_indexes_helper,
                                                                        reduce=True, percentage_output=True)
-    
-    # Stabilizing loss for flow-based latent space
-    flow_input_dkl = model.loss.GaussianDkl(normalize=config.train.normalize_losses)
 
     # Scalars, metrics, images and audio to be tracked in Tensorboard
     scalars = get_scalars(config)
@@ -192,6 +191,10 @@ def train_config():
             else: # config.model.input_type == 'spectrogram'
                 x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
 
+            if config.model.encoder_kwargs.spectrogram_channels > 1:
+                aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
+                x_in = torch.cat((x_in, aug_specs), dim=1)
+
             if config.model.contrastive:
                 aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
                 x_in = torch.cat((x_in, aug_specs), dim=0)
@@ -255,13 +258,6 @@ def train_config():
                                                         else F.mse_loss(x_out, x_in, reduction='mean'))
                 scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
                 scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
-
-            # Flow training stabilization loss?
-            flow_input_loss = torch.tensor([0], device=device)
-            if extended_ae_model.is_flow_based_latent_space and\
-                    (config.train.latent_flow_input_regularization.lower() == 'dkl'):
-                flow_input_loss = 0.1 * config.train.beta * flow_input_dkl(z_0_mu_logvar[:, 0, :],
-                                                                            z_0_mu_logvar[:, 1, :])
             
             cont_loss = controls_criterion(v_out, v_in)
 
@@ -272,8 +268,8 @@ def train_config():
             scalars['Controls/BackpropLoss/Train'].append(cont_loss)
 
             # Update parameters
-            utils.exception.check_nan_values(epoch, recons_loss, lat_loss, flow_input_loss, cont_loss, msspec_loss, cont_loss)
-            (recons_loss + lat_loss + flow_input_loss + msspec_loss + contrastive_loss + cont_loss).backward()
+            utils.exception.check_nan_values(epoch, recons_loss, lat_loss, cont_loss, msspec_loss, cont_loss)
+            (recons_loss + lat_loss + msspec_loss + contrastive_loss + cont_loss).backward()
             optimizer.step()
 
         if config.model.stochastic_latent:
@@ -289,6 +285,10 @@ def train_config():
                     x_in, v_in, sample_info = sample[0].to(device), sample[2].to(device), sample[3].to(device)
                 else:
                     x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
+
+                if config.model.encoder_kwargs.spectrogram_channels > 1:
+                    aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)
+                    x_in = torch.cat((x_in, aug_specs), dim=1)
 
                 if config.model.contrastive:
                     aug_specs = dataset.get_aug_specs(sample_info[:, 0]).to(device)

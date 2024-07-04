@@ -15,10 +15,7 @@ import torch.nn as nn
 
 def build_encoder_and_decoder_models(config):
     # Encoder and decoder with the same architecture
-    if config.model.stack_spectrograms:
-        spectrogram_channels = len(config.dataset.midi_notes)
-    else:
-        spectrogram_channels = 1
+    spectrogram_channels = config.model.encoder_kwargs.spectrogram_channels
 
     config.model.input_tensor_size = (
         config.train.minibatch_size,

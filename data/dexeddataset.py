@@ -46,6 +46,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         constant_filter_and_tune_params: bool = True,
         check_constrains_consistency: bool = True,
         dataset_dir: Optional[str] = None,
+        dataset_name: Optional[str] = None,
+        num_param_bins: int = -1,
         sample_rate: int = 22050,
     ):
         """
@@ -79,6 +81,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             spectrogram_min_dB,
             spectrogram_normalization,
             dataset_dir,
+            dataset_name,
             sample_rate
         )
         self.constant_filter_and_tune_params = constant_filter_and_tune_params
@@ -131,7 +134,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         # Parameters constraints, cardinality, indexes management, ...
         # Param cardinalities are stored - Dexed cardinality involves a short search which can be avoided
         # This cardinality is the LEARNING REPRESENTATION cardinality - will be used for categorical representations
-        self._params_cardinality = np.asarray([dexed.Dexed.get_param_cardinality(idx)
+        self._params_cardinality = np.asarray([dexed.Dexed.get_param_cardinality(idx, num_param_bins)
                                                for idx in range(self.total_nb_params)])
         self._params_default_values = dict()
 
@@ -186,7 +189,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
                         self._vst_param_learnable_model.append('cat')
                     else:
                         raise ValueError("VST param idx={} is neither numerical nor categorical".format(vst_idx))
-        # - - - Final initializations - - -
+        # Final initializations
         self._preset_idx_helper = PresetIndexesHelper(self)
         self._load_spectrogram_stats()  # Must be called after super() ctor
 
@@ -323,13 +326,13 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return torch.stack(aug_specs).unsqueeze(1)
     
     def get_data_from_file(self, preset_UID, midi_pitch, midi_velocity):
-        with h5py.File(self.dataset_dir.joinpath('dataset.h5py'), 'r') as f:
+        with h5py.File(self.dataset_dir.joinpath(f'{self.dataset_name}.h5py'), 'r') as f:
             data = f[f'{preset_UID:06d}_{midi_pitch}_{midi_velocity}']
-            waveform = data['waveform'][:]
-            spectrogram = data['spectrogram'][:]
             synth_param = data['synth_param'][:]
             sample_info = data['sample_info'][:]
             label = data['label'][:]
+        waveform = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)[0].astype(np.float32)
+        spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity).unsqueeze(0)
         return waveform, spectrogram, synth_param, sample_info, label
     
     def get_spec_file_path(self, preset_UID, midi_note, midi_velocity):
@@ -356,7 +359,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
 
     def get_wav_file_path(self, preset_UID, midi_note, midi_velocity):
         """ Returns the path of a wav (from dexed_presets folder). Operators"""
-        filename = "preset{:06d}_midi{:03d}vel{:03d}{}.wav".format(preset_UID, midi_note, midi_velocity,
+        filename = "preset{:06d}_midi{:03d}vel{:03d}{}.wav".format(int(preset_UID), midi_note, midi_velocity,
                                                                    self._operators_suffix)
         return self.wav_files_dir.joinpath(filename)
 

@@ -3,15 +3,20 @@ Audio utils (spectrograms, G&L phase reconstruction, ...)
 """
 
 import os
+import sys
 import warnings
-from typing import Iterable, Sequence, Optional
+from contextlib import contextmanager
+from typing import Iterable, Sequence, Optional, List
 import pathlib
+import psutil
 
 import numpy as np
 import matplotlib.pyplot as plt
+import multiprocessing
 
 import torch
 import torch.fft
+from torch.utils.data import Dataset
 import librosa
 import librosa.display
 import soundfile as sf
@@ -161,8 +166,6 @@ class SimilarityEvaluator:
         return fig, axes
 
 
-
-
 class SimpleSampleLabeler:
     def __init__(self, x_wav, Fs, hpss_margin=3.0, perc_duration_ms=250.0):
         """ Class to attribute labels or a class to sounds, mostly based on librosa hpss and empirical thresholds.
@@ -272,6 +275,66 @@ class SimpleSampleLabeler:
         print("is_harmonic={}   is_percussive={}".format(self.is_harmonic, self.is_percussive))
 
 
+class AudioEvaluator:
+    def __init__(self, dataset: Dataset, num_workers: int, device: str):
+        self.dataset = dataset
+        self.num_workers = num_workers
+        self.device = device
+
+    def multi_process_measure(
+            self,
+            x_wav: np.ndarray,
+            full_preset_out: torch.Tensor,
+            sample_info: np.ndarray,
+        ):
+        x_wav_split = np.array_split(x_wav, self.num_workers, axis=0)
+        midi_pitch_split = np.array_split(sample_info[:, 1], self.num_workers, axis=0)
+        midi_velocity_split = np.array_split(sample_info[:, 2], self.num_workers, axis=0)
+        full_preset_out_split = np.array_split(full_preset_out, self.num_workers, axis=0)
+        workers_data = []
+
+        for i in range(self.num_workers):
+            workers_data.append((
+                x_wav_split[i],
+                full_preset_out_split[i],
+                midi_pitch_split[i],
+                midi_velocity_split[i],
+            ))
+
+        with multiprocessing.Pool(self.num_workers) as p:
+            spec_maes_split = p.map(self._measure_spec_mae_worker, workers_data)
+
+        spec_maes = np.hstack(spec_maes_split)
+        spec_maes = torch.FloatTensor(spec_maes).unsqueeze(1).to(self.device)
+        return spec_maes
+
+    def _measure_spec_mae_worker(self, worker_args: List):
+        pid = os.getpid()
+        cpus = list(range(psutil.cpu_count()))
+        os.sched_setaffinity(pid, cpus)
+        return self._measure_spec_mae(*worker_args)
+
+    def _measure_spec_mae(
+        self,
+        x_wav: np.ndarray,
+        full_preset_out: torch.Tensor,
+        midi_pitch: torch.Tensor,
+        midi_velocity: torch.Tensor,
+    ):
+        spec_maes = []
+
+        for i in range(full_preset_out.shape[0]):
+            with suppress_output():
+                x_wav_inferred, _ = self.dataset._render_audio(
+                    full_preset_out[i],
+                    int(midi_pitch[i]),
+                    int(midi_velocity[i]),
+                )
+            similarity_eval = SimilarityEvaluator((x_wav[i], x_wav_inferred))
+            spec_maes.append(similarity_eval.get_mae_log_stft(return_spectrograms=False))
+
+        return np.array(spec_maes)
+    
 
 def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):
     """ Writes a .wav file and converts it to .mp3 using command-line ffmpeg (which must be available). """
@@ -281,3 +344,34 @@ def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):
     # mp3 320k will be limited to 160k for mono audio - still too much loss for HF content
     os.system("ffmpeg -i {} -b:a 320k -y {}".format(wav_path_str, mp3_path_str))
 
+
+@contextmanager
+def suppress_output():
+    """Suppress stdout and stderr."""
+    # Save the original file descriptors
+    original_stdout_fd = sys.stdout.fileno()
+    original_stderr_fd = sys.stderr.fileno()
+
+    # Duplicate the original file descriptors (stdout and stderr)
+    saved_stdout_fd = os.dup(original_stdout_fd)
+    saved_stderr_fd = os.dup(original_stderr_fd)
+
+    # Open a new file descriptor that redirects to /dev/null
+    devnull_fd = os.open(os.devnull, os.O_RDWR)
+
+    try:
+        # Redirect stdout and stderr to /dev/null
+        os.dup2(devnull_fd, original_stdout_fd)
+        os.dup2(devnull_fd, original_stderr_fd)
+
+        yield
+    finally:
+        # Restore the original stdout and stderr
+        os.dup2(saved_stdout_fd, original_stdout_fd)
+        os.dup2(saved_stderr_fd, original_stderr_fd)
+
+        # Close the duplicated file descriptors
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+        

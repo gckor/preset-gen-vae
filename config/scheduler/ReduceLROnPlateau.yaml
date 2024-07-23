@@ -1,0 +1,7 @@
+train:
+  scheduler_kwargs:
+    factor: 0.2
+    patience: 6
+    cooldown: 6
+    threshold: 0.0001
+    

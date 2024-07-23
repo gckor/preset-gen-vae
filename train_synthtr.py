@@ -15,19 +15,21 @@ import mkl
 import torch
 import torch.nn as nn
 import torch.optim
+from pyvirtualdisplay import Display
 
 import logs.logger
 import logs.metrics
 from logs.metrics import SimpleMetric, EpochMetric
 import data.dataset
 import data.build
-import utils.profile
 import utils.figures
 import utils.exception
+from utils.audio import AudioEvaluator
+from utils.scheduler import get_scheduler
 from utils.distrib import get_parallel_devices
 from config import load_config
 from model.encoder import SynthTR
-from model.loss import SynthParamsLoss, QuantizedNumericalParamsLoss, CategoricalParamsAccuracy
+from model.loss import SynthParamsLoss, QuantizedNumericalParamsLoss, CategoricalParamsAccuracy, PresetProcessor
 from utils.hparams import LinearDynamicParam
 
 
@@ -74,11 +76,14 @@ def train_config():
     controls_criterion = SynthParamsLoss(
         preset_idx_helper,
         config.train.normalize_losses,
-        cat_bce=config.train.params_cat_bceloss,
-        cat_softmax=(not config.model.params_reg_softmax and not
-                        config.train.params_cat_bceloss),
-        cat_softmax_t=config.train.params_cat_softmax_temperature
+        cat_softmax_t=config.train.params_cat_softmax_temperature,
+        label_smoothing=config.train.params_label_smoothing,
     )
+
+    # Policy gradient loss
+    if config.train.pg_loss:
+        preset_processor = PresetProcessor(dataset, preset_idx_helper)
+        audio_evaluator = AudioEvaluator(dataset, config.train.audio_eval_n_workers, device)
 
     # Monitoring losses always remain the same
     controls_num_eval_criterion = QuantizedNumericalParamsLoss(preset_idx_helper, numerical_loss=nn.MSELoss(reduction='mean'))
@@ -92,6 +97,15 @@ def train_config():
     scalars['Controls/QLoss/Valid'] = EpochMetric()
     scalars['Controls/Accuracy/Train'] = EpochMetric()
     scalars['Controls/Accuracy/Valid'] = EpochMetric()
+
+    if config.train.pg_loss:
+        scalars['Specs/LogProb/Train'] = EpochMetric()
+        scalars['Specs/LogProb/Valid'] = EpochMetric()
+        scalars['Spec/SpecMAE/Train'] = EpochMetric()
+        scalars['Spec/SpecMAE/Valid'] = EpochMetric()
+        scalars['Spec/PGLoss/Train'] = EpochMetric()
+        scalars['Spec/PGLoss/Valid'] = EpochMetric()
+
     scalars['Sched/LR'] = SimpleMetric(config.train.initial_learning_rate)
     scalars['Sched/LRwarmup'] = LinearDynamicParam(
         start_value=config.train.lr_warmup_start_factor,
@@ -115,17 +129,10 @@ def train_config():
         weight_decay=config.train.weight_decay,
         betas=config.train.adam_betas
     )
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer,
-    #     factor=config.train.scheduler_lr_factor,
-    #     patience=config.train.scheduler_patience,
-    #     cooldown=config.train.scheduler_cooldown,
-    #     threshold=config.train.scheduler_threshold,
-    #     verbose=(config.verbosity >= 2)
-    # )
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=15, eta_min=1e-5)
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=15, eta_min=1e-5)
+    scheduler = get_scheduler(config.train.scheduler_name, optimizer, **config.train.scheduler_kwargs)
+
+    disp = Display()
+    disp.start()
 
     # Model training epochs
     for epoch in tqdm(range(config.train.start_epoch, config.train.n_epochs), desc='epoch', position=0):
@@ -145,9 +152,19 @@ def train_config():
         
         for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
             sample = next(dataloader_iter)
-            x_in, v_in, = sample[1].to(device), sample[2].to(device)
+            x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
             optimizer.zero_grad()
             v_out = model_parallel(x_in)
+
+            if config.train.pg_loss:
+                full_preset_out, mean_log_probs = preset_processor(v_out)
+                spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                pg_loss = (spec_maes * mean_log_probs).mean()
+                scalars['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
+                scalars['Spec/SpecMAE/Train'].append(spec_maes.mean().item())
+                scalars['Spec/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
+            else:
+                pg_loss = torch.zeros(1).to(device)
 
             # Monitoring losses
             with torch.no_grad():
@@ -160,32 +177,46 @@ def train_config():
             scalars['Controls/BackpropLoss/Train'].append(cont_loss)
 
             # Update parameters
-            utils.exception.check_nan_values(epoch, cont_loss)
-            cont_loss.backward()
+            loss = config.train.pg_loss_coef * pg_loss + cont_loss
+            utils.exception.check_nan_values(epoch, cont_loss, pg_loss)
+            loss.backward()
             optimizer.step()
 
-        # Evaluation on validation dataset (no profiling)
-        with torch.no_grad():
-            model_parallel.eval()  # BN stops running estimates
-            for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
-                x_in, v_in = sample[1].to(device), sample[2].to(device)
-                v_out = model_parallel(x_in)
+        # Evaluation on validation dataset
+        if epoch % config.train.eval_period == 0:
+            with torch.no_grad():
+                model_parallel.eval()  # BN stops running estimates
+                for sample in tqdm(dataloader['validation'], desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
+                    x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+                    v_out = model_parallel(x_in)
 
-                # Loss
-                cont_loss = controls_criterion(v_out, v_in)
-                
-                # Monitoring losses
-                scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
-                scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+                    if config.train.pg_loss:
+                        full_preset_out, mean_log_probs = preset_processor(v_out)
+                        spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                        pg_loss = (spec_maes * mean_log_probs).mean()
+                        scalars['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
+                        scalars['Spec/SpecMAE/Valid'].append(spec_maes.mean().item())
+                        scalars['Spec/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
 
-                # Log backpropagation valid losses
-                scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
+                    # Loss
+                    cont_loss = controls_criterion(v_out, v_in)
+                    
+                    # Monitoring losses
+                    scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
+                    scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+
+                    # Log backpropagation valid losses
+                    scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
 
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
         scalars['Sched/LR'] = logs.metrics.SimpleMetric(optimizer.param_groups[0]['lr'])
-        scheduler.step()
-        # scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get() for loss_name in config.train.scheduler_loss]))
+
+        if config.train.scheduler_name == 'ExponentialLR':
+            scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get() for loss_name in config.train.scheduler_loss]))
+        else:
+            scheduler.step()
+
         early_stop = (optimizer.param_groups[0]['lr'] < config.train.early_stop_lr_threshold)
 
         # Epoch logs (scalars/sounds/images + updated metrics)
@@ -213,6 +244,7 @@ def train_config():
 
 
     # "Manual GC" (to try to prevent random CUDA out-of-memory between enqueued runs
+    disp.stop()
     del scheduler, optimizer
     del model_parallel
     del model

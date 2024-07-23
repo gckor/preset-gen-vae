@@ -6,6 +6,7 @@ TODO write doc
 
 import os
 import os.path
+import psutil
 from pathlib import Path
 from datetime import datetime
 from typing import Sequence
@@ -17,8 +18,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pandas as pd
-
-import torchinfo
 
 import data.build
 import data.preset
@@ -93,20 +92,11 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     # Synth parameter index information for alignment   
     preset_idx_helper = dataset.preset_indexes_helper
-    preset_idx_helper = dataset.preset_indexes_helper
-    full_idx = preset_idx_helper.full_to_learnable
-    cat_idx, num_idx = [], []
-
-    for idx in full_idx:
-        if isinstance(idx, list):
-            cat_idx.append(idx)
-        elif isinstance(idx, int):
-            num_idx.append(idx)
 
     # Rebuild model from last saved checkpoint (default: if trained on GPU, would be loaded on GPU)
     device = torch.device(eval_config.device)
     checkpoint = logs.logger.get_model_last_checkpoint(root_path, config, device=device)
-    eval_model = SynthTR(cat_idx, num_idx, **config.model.encoder_kwargs)
+    eval_model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
     eval_model.load_state_dict(checkpoint['ae_model_state_dict'])
     eval_model = eval_model.to(device).eval()
     torch.set_grad_enabled(False)
@@ -194,8 +184,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     audio_path = path_to_model_dir.joinpath('audio')
     spec_path = path_to_model_dir.joinpath('spectrogram')
     os.makedirs(audio_path, exist_ok=True)
-    os.makedirs(spec_path, exist_ok=True)
-    
+    os.makedirs(spec_path, exist_ok=True)  
 
     num_workers = int(np.round(os.cpu_count() * eval_config.multiprocess_cores_ratio))
     preset_UIDs_split = np.array_split(preset_UIDs, num_workers, axis=0)
@@ -243,6 +232,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
 
 def _measure_audio_errors_worker(worker_args):
+    pid = os.getpid()
+    cpus = list(range(psutil.cpu_count()))
+    os.sched_setaffinity(pid, cpus)
     return _measure_audio_errors(*worker_args)
 
 
@@ -250,14 +242,16 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
                           sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
     # Dict of per-UID errors (if multiple notes: note-averaged values)
     errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
+    disp = Display()
+    disp.start()
+
     for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
         mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
             x_wav_original, _ = dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
-            disp = Display()
-            disp.start()
-            x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
-            disp.stop()
+            with utils.audio.suppress_output():
+                x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+
             # Save .wav files
             filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
             filename_inferred = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.wav')
@@ -281,8 +275,12 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
         errors['spec_sc'].append(np.mean(sc))
         errors['mfcc13_mae'].append(np.mean(mfcc13_mae))
         errors['mfcc40_mae'].append(np.mean(mfcc40_mae))
+
+    disp.stop()
+
     for error_name in errors:
         errors[error_name] = np.asarray(errors[error_name])
+
     return errors
 
 
@@ -293,5 +291,3 @@ if __name__ == "__main__":
     print("Starting models evaluation using configuration from evalconfig.py, using '{}' dataset"
           .format(eval_config.dataset))
     evaluate_all_models(eval_config)
-
-

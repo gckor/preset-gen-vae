@@ -1,0 +1,3 @@
+train:
+  scheduler_kwargs:
+    gamma: 0.98

@@ -217,11 +217,16 @@ class PresetDatabase:
 class Dexed:
     """ A Dexed (DX7) synth that can be used through RenderMan for offline wav rendering. """
 
-    def __init__(self, plugin_path="/root/dexed/Builds/Linux/build/Dexed.so",
-                 midi_note_duration_s=3.0, render_duration_s=4.0,
-                 sample_rate=22050,  # librosa default sr
-                 buffer_size=512, fft_size=512,
-                 fadeout_duration_s=0.1):
+    def __init__(
+            self,
+            plugin_path="/home/dexed/Builds/Linux/build/Dexed.so",
+            midi_note_duration_s=3.0,
+            render_duration_s=4.0,
+            sample_rate=22050,  # librosa default sr
+            buffer_size=512,
+            fft_size=512,
+            fadeout_duration_s=0.1,
+        ):
         self.fadeout_duration_s = fadeout_duration_s  # To reduce STFT discontinuities with long-release presets
         self.midi_note_duration_s = midi_note_duration_s
         self.render_duration_s = render_duration_s
@@ -382,7 +387,7 @@ class Dexed:
         return [(42 + 22*i) for i in range(6)] + [14]
 
     @staticmethod
-    def get_param_cardinality(param_index):
+    def get_param_cardinality(param_index, num_param_bins):
         """ Returns the number of possible values for a given parameter, or -1 if the param
         is considered continuous (100 discrete values). """
         if param_index == 4:  # Algorithm
@@ -418,10 +423,10 @@ class Dexed:
                 return 2
             elif (param_index % 22) == (36 % 22):  # OPx Break Point
                 return 34
-            else:  # all other are considered non-discrete  # TODO return 100
-                return -1
-        else:  # all other are considered non-discrete
-            return -1
+            else:  # all other are considered non-discrete (-1) or discreted classes (value)
+                return num_param_bins
+        else:  # all other are considered non-discrete (-1) or discreted classes (value)
+            return num_param_bins
 
     @staticmethod
     def get_numerical_params_indexes():

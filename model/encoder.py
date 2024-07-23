@@ -642,7 +642,7 @@ class SynthTR(nn.Module):
             preset_idx_helper: PresetIndexesHelper,
             d_model: int = 256,
             spectrogram_channels: int = 1,
-            num_queries: int = 144,
+            n_queries: int = 144,
             transformer_kwargs: Dict[str, Any] = {},
         ):
         super().__init__()
@@ -651,79 +651,31 @@ class SynthTR(nn.Module):
 
         self.backbone = CNNBackbone(spectrogram_channels, d_model)
         self.enc_pos_embed = PositionEmbeddingSine(d_model // 2)
-        self.query_pos_embed = PositionalEncoding1D(d_model, num_queries)
-        self.transformer = Transformer(num_queries, d_model, **transformer_kwargs)
+        self.query_pos_embed = PositionalEncoding1D(d_model, n_queries)
+        self.transformer = Transformer(n_queries, d_model, **transformer_kwargs)
 
         # Projection layers
-        self.proj = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(d_model, self.out_dim),
-            nn.Tanh(),
-        )
+        self.proj_dropout = nn.Dropout(0.3)
+        self.proj = nn.Linear(d_model, self.out_dim)
+        self.last_act = nn.Tanh()
 
-        # Fullsep
-        # projections = []
-
-        # Shallow
-        # for i in range(len(cat_idx)):
-        #     projections.append(
-        #         nn.Sequential(
-        #             nn.Dropout(0.3),
-        #             nn.Linear(dim_z, len(cat_idx[i])),
-        #             nn.Tanh(),
-        #         )
-        #     )
-
-        # for i in range(len(num_idx)):
-        #     projections.append(
-        #         nn.Sequential(
-        #             nn.Dropout(0.3),
-        #             nn.Linear(dim_z, 1),
-        #             nn.Tanh(),
-        #         )
-        #     )
-
-
-        # Deep
-        # for i in range(len(cat_idx)):
-        #     projections.append(
-        #         nn.Sequential(
-        #             nn.Dropout(0.3),
-        #             nn.Linear(dim_z, 512),
-        #             nn.BatchNorm1d(512),
-        #             nn.LeakyReLU(0.1),
-        #             nn.Dropout(0.3),
-        #             nn.Linear(512, len(cat_idx[i])),
-        #             nn.Tanh(),
-        #         )
-        #     )
-
-        # for i in range(len(num_idx)):
-        #     projections.append(
-        #         nn.Sequential(
-        #             nn.Dropout(0.3),
-        #             nn.Linear(dim_z, 512),
-        #             nn.BatchNorm1d(512),
-        #             nn.LeakyReLU(0.1),
-        #             nn.Dropout(0.3),
-        #             nn.Linear(512, 1),
-        #             nn.Tanh(),
-        #         )
-        #     )
-        
-        # self.projections = nn.ModuleList(projections)
-                
-
-        # Deep projection
-        # self.mlp = nn.Sequential(
-        #     nn.Dropout(0.3),
-        #     nn.Linear(256, 512), #36864(dec flatten) #27648 (enc flatten) # 256(gap)
-        #     nn.BatchNorm1d(512),
-        #     nn.LeakyReLU(0.1),
-        #     nn.Dropout(0.3),
-        #     nn.Linear(512, 610),
-        #     nn.Tanh(),
+        # For previous experiments (add dummy dropout layers)
+        # self.proj = nn.Sequential(
+        #     nn.Dropout(0),
+        #     nn.Linear(d_model, self.out_dim),
+        #     nn.Dropout(0),
         # )
+
+        # Full sep
+        proj = []
+
+        for i in range(len(self.cat_idx)):
+            proj.append(nn.Linear(d_model, len(self.cat_idx[i])))
+
+        for i in range(len(self.num_idx)):
+            proj.append(nn.Linear(d_model, 1))
+        
+        self.proj = nn.ModuleList(proj)
 
     def forward(self, spectrogram):
         features = self.backbone(spectrogram)
@@ -753,40 +705,37 @@ class SynthTR(nn.Module):
         # GAP
         # dec_out = dec_out.mean(dim=1)
 
-        # Fullsep
-        # batch_size, n_query, n_channel = dec_out.shape
-        # out = torch.zeros((batch_size, 610), device=dec_out.device)
+        # Sep-head
+        batch_size, n_query, d_model = dec_out.shape
+        out = torch.zeros((batch_size, self.out_dim), device=dec_out.device)
+        
+        dec_out = dec_out.reshape(-1, d_model)
+        dec_out = self.proj_dropout(dec_out)
+
+        # Partial sep
+        # dec_out = self.proj(dec_out)
+        # dec_out = dec_out.reshape(batch_size, n_query, -1)
+        # cat_out = dec_out[:, :len(self.cat_idx), :]
+        # num_out = dec_out[:, len(self.cat_idx):, :]
 
         # for i in range(len(self.cat_idx)):
-        #     out[:, self.cat_idx[i]] = self.projections[i](dec_out[:, i, :])
+        #     out[:, self.cat_idx[i]] = cat_out[:, i, self.cat_idx[i]]
 
-        # for i in range(len(self.cat_idx), n_query):
-        #     out[:, self.num_idx[i - len(self.cat_idx)]] = self.projections[i](dec_out[:, i, :]).squeeze()
+        # for j in range(len(self.num_idx)):
+        #     out[:, self.num_idx[j]] = num_out[:, j, self.num_idx[j]]
 
-        # out = 0.5 * (out + 1.) # Tanh
-        
-
-        # # Sep-head
-        batch_size, n_query, d_model = dec_out.shape
-        dec_out = dec_out.reshape(-1, d_model)
-        
-        # # Projection
-        dec_out = self.proj(dec_out)
-        dec_out = 0.5 * (dec_out + 1.) # Tanh
-
-        # # Sep-head
+        # Full sep
         dec_out = dec_out.reshape(batch_size, n_query, -1)
-        cat_out = dec_out[:, :len(self.cat_idx), :]
-        num_out = dec_out[:, len(self.cat_idx):, :]
-
-        out = torch.zeros((batch_size, self.out_dim), device=dec_out.device)
 
         for i in range(len(self.cat_idx)):
-            out[:, self.cat_idx[i]] = cat_out[:, i, self.cat_idx[i]]
+            out[:, self.cat_idx[i]] = self.proj[i](dec_out[:, i, :])
 
-        for j in range(len(self.num_idx)):
-            out[:, self.num_idx[j]] = num_out[:, j, self.num_idx[j]]
+        for i in range(len(self.cat_idx), n_query):
+            out[:, self.num_idx[i - len(self.cat_idx)]] = self.proj[i](dec_out[:, i, :]).squeeze()
 
+        # Output Activation
+        out = self.last_act(out)
+        out = 0.5 * (out + 1.)
         return out
     
     def _get_learnable_idx(self, preset_idx_helper):

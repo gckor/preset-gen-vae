@@ -1,0 +1,4 @@
+train:
+  scheduler_kwargs:
+    T_max: 15
+    eta_min: 0.00001

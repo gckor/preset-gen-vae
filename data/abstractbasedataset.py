@@ -36,6 +36,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         spectrogram_min_dB=-120.0,
         spectrogram_normalization='min_max',
         dataset_dir=None,
+        dataset_name=None,
         sample_rate=22050,
     ):
         """
@@ -63,10 +64,10 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         self._multichannel_stacked_spectrograms = multichannel_stacked_spectrograms
         self.n_mel_bins = n_mel_bins
         self.normalize_audio = normalize_audio
-        # - - - - - Attributes to be set by the child concrete class - - - - -
+        # Attributes to be set by the child concrete class
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
-        # - - - Spectrogram utility class - - -
+        # Spectrogram utility class
         if self.n_mel_bins <= 0:
             self.spectrogram = utils.audio.Spectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB)
         else:
@@ -77,6 +78,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         self.spec_stats = None
         self.sample_rate = sample_rate
         self.dataset_dir = pathlib.Path(dataset_dir)
+        self.dataset_name = dataset_name
         self.wav_files_dir = self.dataset_dir.joinpath('wav')
         self.spec_files_dir = self.dataset_dir.joinpath('spectrogram')
 
@@ -134,11 +136,11 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             
             spectrogram = np.stack(spectrograms)
         
-        return torch.FloatTensor(waveform).unsqueeze(0), \
-            torch.tensor(spectrogram), \
-            torch.tensor(synth_param), \
-            torch.tensor(sample_info), \
-            torch.tensor(label)
+        return waveform, \
+            torch.FloatTensor(spectrogram), \
+            torch.Tensor(synth_param), \
+            sample_info, \
+            torch.Tensor(label)
 
     @property
     @abstractmethod

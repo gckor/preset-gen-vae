@@ -29,7 +29,7 @@ from utils.scheduler import get_scheduler
 from utils.distrib import get_parallel_devices
 from config import load_config
 from model.encoder import SynthTR
-from model.loss import SynthParamsLoss, QuantizedNumericalParamsLoss, CategoricalParamsAccuracy, PresetProcessor
+from model.loss import SynthParamsLoss, QuantizedNumericalParamsLoss, CategoricalParamsAccuracy, PresetProcessor, calculate_rewards
 from utils.hparams import LinearDynamicParam
 
 
@@ -69,10 +69,7 @@ def train_config():
     model = model.to(device)
     model_parallel = nn.DataParallel(model, device_ids=device_ids, output_device=device)
 
-    # Losses (criterion functions)
-    # Training losses (for backprop) and Metrics (monitoring) losses and accuracies
-    # Some losses are defined in the models themselves
-    # Controls backprop loss
+    # Parameter loss
     controls_criterion = SynthParamsLoss(
         preset_idx_helper,
         config.train.normalize_losses,
@@ -90,36 +87,30 @@ def train_config():
     controls_accuracy_criterion = CategoricalParamsAccuracy(preset_idx_helper, reduce=True, percentage_output=True)
 
     # Scalars, metrics, images and audio to be tracked in Tensorboard
-    scalars = dict()
-    scalars['Controls/BackpropLoss/Train'] = EpochMetric()
-    scalars['Controls/BackpropLoss/Valid'] = EpochMetric()
-    scalars['Controls/QLoss/Train'] = EpochMetric()
-    scalars['Controls/QLoss/Valid'] = EpochMetric()
-    scalars['Controls/Accuracy/Train'] = EpochMetric()
-    scalars['Controls/Accuracy/Valid'] = EpochMetric()
+    scalars_train = dict()
+    scalars_valid = dict()
+    scalars_train['Controls/BackpropLoss/Train'] = EpochMetric()
+    scalars_valid['Controls/BackpropLoss/Valid'] = EpochMetric()
+    scalars_train['Controls/QLoss/Train'] = EpochMetric()
+    scalars_valid['Controls/QLoss/Valid'] = EpochMetric()
+    scalars_train['Controls/Accuracy/Train'] = EpochMetric()
+    scalars_valid['Controls/Accuracy/Valid'] = EpochMetric()
 
     if config.train.pg_loss:
-        scalars['Specs/LogProb/Train'] = EpochMetric()
-        scalars['Specs/LogProb/Valid'] = EpochMetric()
-        scalars['Spec/SpecMAE/Train'] = EpochMetric()
-        scalars['Spec/SpecMAE/Valid'] = EpochMetric()
-        scalars['Spec/PGLoss/Train'] = EpochMetric()
-        scalars['Spec/PGLoss/Valid'] = EpochMetric()
+        scalars_train['Specs/LogProb/Train'] = EpochMetric()
+        scalars_valid['Specs/LogProb/Valid'] = EpochMetric()
+        scalars_train['Spec/SpecMAE/Train'] = EpochMetric()
+        scalars_valid['Spec/SpecMAE/Valid'] = EpochMetric()
+        scalars_train['Spec/PGLoss/Train'] = EpochMetric()
+        scalars_valid['Spec/PGLoss/Valid'] = EpochMetric()
 
-    scalars['Sched/LR'] = SimpleMetric(config.train.initial_learning_rate)
-    scalars['Sched/LRwarmup'] = LinearDynamicParam(
+    scalars_train['Sched/LR'] = SimpleMetric(config.train.initial_learning_rate)
+    scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
         start_value=config.train.lr_warmup_start_factor,
         end_value=1.0,
         end_epoch=config.train.lr_warmup_epochs,
         current_epoch=config.train.start_epoch
     )
-
-    # Validation metrics have a '_' suffix to be different from scalars (tensorboard mixes them)
-    metrics = {'Controls/QLoss/Valid_': logs.metrics.BufferedMetric(),
-               'Controls/Accuracy/Valid_': logs.metrics.BufferedMetric(),
-               'epochs': config.train.start_epoch}
-    
-    logger.tensorboard.init_hparams_and_metrics(metrics)  # hparams added knowing config.*
 
     # Optimizer and Scheduler
     model.train()
@@ -138,13 +129,13 @@ def train_config():
     for epoch in tqdm(range(config.train.start_epoch, config.train.n_epochs), desc='epoch', position=0):
 
         # Re-init of epoch metrics and useful scalars (warmup ramps, ...)
-        for _, s in scalars.items():
+        for _, s in scalars_train.items():
             s.on_new_epoch()
 
         # LR warmup (bypasses the scheduler during first epochs)
         if epoch <= config.train.lr_warmup_epochs:
             for param_group in optimizer.param_groups:
-                param_group['lr'] = scalars['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate
+                param_group['lr'] = scalars_train['Sched/LRwarmup'].get(epoch) * config.train.initial_learning_rate
 
         # Train all mini-batches
         model_parallel.train()
@@ -159,22 +150,23 @@ def train_config():
             if config.train.pg_loss:
                 full_preset_out, mean_log_probs = preset_processor(v_out)
                 spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
-                pg_loss = (spec_maes * mean_log_probs).mean()
-                scalars['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
-                scalars['Spec/SpecMAE/Train'].append(spec_maes.mean().item())
-                scalars['Spec/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
+                rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
+                pg_loss = -(rewards * mean_log_probs).mean()
+                scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
+                scalars_train['Spec/SpecMAE/Train'].append(spec_maes.mean().item())
+                scalars_train['Spec/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
             else:
                 pg_loss = torch.zeros(1).to(device)
 
             # Monitoring losses
             with torch.no_grad():
-                scalars['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
-                scalars['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
+                scalars_train['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
+                scalars_train['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
             
             cont_loss = controls_criterion(v_out, v_in)
 
             # Log backpropagation losses
-            scalars['Controls/BackpropLoss/Train'].append(cont_loss)
+            scalars_train['Controls/BackpropLoss/Train'].append(cont_loss)
 
             # Update parameters
             loss = config.train.pg_loss_coef * pg_loss + cont_loss
@@ -184,49 +176,51 @@ def train_config():
 
         # Evaluation on validation dataset
         if epoch % config.train.eval_period == 0:
+            for _, s in scalars_valid.items():
+                s.on_new_epoch()
+
             with torch.no_grad():
                 model_parallel.eval()  # BN stops running estimates
-                for sample in tqdm(dataloader['validation'], desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
+                for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
                     x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
                     v_out = model_parallel(x_in)
 
                     if config.train.pg_loss:
                         full_preset_out, mean_log_probs = preset_processor(v_out)
                         spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
-                        pg_loss = (spec_maes * mean_log_probs).mean()
-                        scalars['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
-                        scalars['Spec/SpecMAE/Valid'].append(spec_maes.mean().item())
-                        scalars['Spec/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
+                        rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
+                        pg_loss = -(rewards * mean_log_probs).mean()
+                        scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
+                        scalars_valid['Spec/SpecMAE/Valid'].append(spec_maes.mean().item())
+                        scalars_valid['Spec/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
 
                     # Loss
                     cont_loss = controls_criterion(v_out, v_in)
                     
                     # Monitoring losses
-                    scalars['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
-                    scalars['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+                    scalars_valid['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
+                    scalars_valid['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
 
                     # Log backpropagation valid losses
-                    scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
+                    scalars_valid['Controls/BackpropLoss/Valid'].append(cont_loss)
+
+            for k, s in scalars_valid.items():
+                logger.tensorboard.add_scalar(k, s.get(), epoch)
 
         # Dynamic LR scheduling depends on validation performance
         # Summed losses for plateau-detection are chosen in config.py
-        scalars['Sched/LR'] = logs.metrics.SimpleMetric(optimizer.param_groups[0]['lr'])
+        scalars_train['Sched/LR'] = logs.metrics.SimpleMetric(optimizer.param_groups[0]['lr'])
 
-        if config.train.scheduler_name == 'ExponentialLR':
-            scheduler.step(sum([scalars['{}/Valid'.format(loss_name)].get() for loss_name in config.train.scheduler_loss]))
+        if config.train.scheduler_name == 'ReduceLROnPlateau':
+            scheduler.step(sum([scalars_valid['{}/Valid'.format(loss_name)].get() for loss_name in config.train.scheduler_loss]))
         else:
             scheduler.step()
 
         early_stop = (optimizer.param_groups[0]['lr'] < config.train.early_stop_lr_threshold)
 
         # Epoch logs (scalars/sounds/images + updated metrics)
-        for k, s in scalars.items():  # All available scalars are written to tensorboard
+        for k, s in scalars_train.items():  # All available scalars are written to tensorboard
             logger.tensorboard.add_scalar(k, s.get(), epoch)
-        
-        metrics['epochs'] = epoch + 1
-        metrics['Controls/QLoss/Valid_'].append(scalars['Controls/QLoss/Valid'].get())
-        metrics['Controls/Accuracy/Valid_'].append(scalars['Controls/Accuracy/Valid'].get())
-        logger.tensorboard.update_metrics(metrics)
 
         # Model+optimizer(+scheduler) save - ready for next epoch
         if (epoch > 0 and epoch % config.train.save_period == 0)\

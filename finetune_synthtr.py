@@ -31,7 +31,7 @@ def measure_spec_mae(x_wav, full_preset_out, midi_pitch, midi_velocity):
 if __name__ == '__main__':
     # Finetune config
     logs_root_dir = Path('/data2/personal/swc/exp_logs/preset-gen-vae')
-    model_path = logs_root_dir.joinpath('rlft_num_as_25_cls/kfold0-s1')
+    model_path = logs_root_dir.joinpath('num_as_25_cls-fullsep/kfold0-s1')
     device = 'cuda'
     n_epochs = 20
     midi_pitch = 60
@@ -60,9 +60,6 @@ if __name__ == '__main__':
     controls_criterion = SynthParamsLoss(
         preset_idx_helper,
         config.train.normalize_losses,
-        cat_bce=config.train.params_cat_bceloss,
-        cat_softmax=(not config.model.params_reg_softmax and not
-                        config.train.params_cat_bceloss),
         cat_softmax_t=config.train.params_cat_softmax_temperature
     )
 

@@ -286,33 +286,16 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return ops_suffix
 
     def generate_data(self, idx):
-        if self.midi_notes_per_preset > 1 and not self._multichannel_stacked_spectrograms:
-            preset_index = idx // self.midi_notes_per_preset
-            midi_note_indexes = [i % self.midi_notes_per_preset]
-        else:
-            preset_index = idx
-            midi_note_indexes = range(self.midi_notes_per_preset)
+        midi_pitch, midi_velocity = self.midi_notes[0]
 
-        if len(midi_note_indexes) == 1:
-            ref_midi_pitch, ref_midi_velocity = self.midi_notes[midi_note_indexes[0]]
-        else:
-            ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
-
-        preset_UID = self.valid_preset_UIDs[preset_index]
+        preset_UID = self.valid_preset_UIDs[idx]
         preset_params = self.get_full_preset_params(preset_UID)
-        spectrograms = list()
 
-        for midi_note_idx in midi_note_indexes:
-            midi_pitch, midi_velocity = self.midi_notes[midi_note_idx]
-            waveform, _ = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
-            spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
-            spectrograms.append(spectrogram)     
-
-        return waveform.astype(np.float32), \
-            torch.stack(spectrograms).numpy(), \
-            preset_params.get_learnable().squeeze().numpy(), \
-            np.array([preset_UID, ref_midi_pitch, ref_midi_velocity], dtype=np.int32), \
-            self.get_labels_tensor(preset_UID).numpy()
+        return (
+            preset_params.get_learnable().squeeze().numpy(),
+            np.array([preset_UID, midi_pitch, midi_velocity], dtype=np.int32),
+            self.get_labels_tensor(preset_UID).numpy(),
+        )
 
     def get_aug_specs(self, preset_UIDs, augmented_pitch=[40, 50, 70]):
         midi_pitch = np.random.choice(augmented_pitch)

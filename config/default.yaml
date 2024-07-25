@@ -8,11 +8,11 @@ dataset:
   spectrogram_min_dB: -120.0
   algos: null
   operators: [1, 2, 3, 4, 5, 6]
-  vst_params_learned_as_categorical: all<=34
+  vst_params_learned_as_categorical: all<=32
   restrict_to_labels: null
   dataset_dir: /data1/Music/synth_sound_match/dexed/
-  dataset_name: num_as_25_cls
-  num_param_bins: 25
+  dataset_name: numcatpp32
+  num_param_bins: -1 # -1 if no discretization of numerical params
 
 train:
   current_k_fold: 0
@@ -51,15 +51,16 @@ train:
   logged_samples_count: 4
   pg_loss: True
   audio_eval_n_workers: 16
-  pg_loss_coef: 0.01
+  pg_loss_coef: 0.1
+  pg_logp_threshold: null
   params_label_smoothing: True
   
 
 model:
-  name: pgloss_p01
+  name: pgvae_base
   run_name: kfold0-s1
   input_type: spectrogram
-  stack_spectrograms: False
+  stack_spectrograms: True
   stack_specs_deepest_features_mix: False
   concat_midi_to_z: False
   sampling_rate: 22050

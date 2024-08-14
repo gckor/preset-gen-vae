@@ -63,11 +63,11 @@ def train_config():
 
     extended_ae_model.eval()
     logger.init_with_model(extended_ae_model, config.model.input_tensor_size)
-    logger.write_model_summary(
-        model=extended_ae_model.reg_model,
-        input_tensor_size=(config.train.minibatch_size, config.model.dim_z),
-        model_name="reg",
-    )
+    # logger.write_model_summary(
+    #     model=extended_ae_model.reg_model,
+    #     input_tensor_size=(config.train.minibatch_size, config.model.dim_z),
+    #     model_name="reg",
+    # )
 
     # Training devices (GPU(s) only)
     if config.verbosity >= 1:
@@ -115,10 +115,7 @@ def train_config():
     controls_criterion = model.loss.SynthParamsLoss(
         dataset.preset_indexes_helper,
         config.train.normalize_losses,
-        cat_bce=config.train.params_cat_bceloss,
-        cat_softmax=(not config.model.params_reg_softmax and not
-                        config.train.params_cat_bceloss),
-        cat_softmax_t=config.train.params_cat_softmax_temperature
+        cat_softmax_t=config.train.params_cat_softmax_temperature,
     )
 
     # Monitoring losses always remain the same

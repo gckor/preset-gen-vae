@@ -99,10 +99,11 @@ def train_config():
     if config.train.pg_loss:
         scalars_train['Specs/LogProb/Train'] = EpochMetric()
         scalars_valid['Specs/LogProb/Valid'] = EpochMetric()
-        scalars_train['Spec/SpecMAE/Train'] = EpochMetric()
-        scalars_valid['Spec/SpecMAE/Valid'] = EpochMetric()
-        scalars_train['Spec/PGLoss/Train'] = EpochMetric()
-        scalars_valid['Spec/PGLoss/Valid'] = EpochMetric()
+        scalars_train['Specs/SpecMAE/Train'] = EpochMetric()
+        scalars_valid['Specs/SpecMAE/Valid'] = EpochMetric()
+        scalars_train['Specs/PGLoss/Train'] = EpochMetric()
+        scalars_valid['Specs/PGLoss/Valid'] = EpochMetric()
+        scalars_train['Specs/RewardSampleNum'] = EpochMetric()
 
     scalars_train['Sched/LR'] = SimpleMetric(config.train.initial_learning_rate)
     scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
@@ -153,8 +154,14 @@ def train_config():
                 rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
                 pg_loss = -(rewards * mean_log_probs).mean()
                 scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
-                scalars_train['Spec/SpecMAE/Train'].append(spec_maes.mean().item())
-                scalars_train['Spec/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
+                scalars_train['Specs/SpecMAE/Train'].append(spec_maes.mean().item())
+                scalars_train['Specs/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
+                scalars_train['Specs/RewardSampleNum'].append((spec_maes < config.train.pg_logp_threshold).sum().item())
+                if pg_loss > 1:
+                    print(f'spec_maes: {spec_maes[rewards > 0]}')
+                    print(f'rewards: {rewards[rewards > 0]}')
+                    print(f'mean_log_probs: {mean_log_probs[rewards > 0]}')
+                    print(f'pg_loss: {pg_loss}')
             else:
                 pg_loss = torch.zeros(1).to(device)
 
@@ -191,8 +198,8 @@ def train_config():
                         rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
                         pg_loss = -(rewards * mean_log_probs).mean()
                         scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
-                        scalars_valid['Spec/SpecMAE/Valid'].append(spec_maes.mean().item())
-                        scalars_valid['Spec/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
+                        scalars_valid['Specs/SpecMAE/Valid'].append(spec_maes.mean().item())
+                        scalars_valid['Specs/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
 
                     # Loss
                     cont_loss = controls_criterion(v_out, v_in)

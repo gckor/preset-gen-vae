@@ -9,6 +9,7 @@ import os.path
 from pathlib import Path
 from datetime import datetime
 from typing import Sequence
+import psutil
 import multiprocessing
 from omegaconf import OmegaConf
 from matplotlib import pyplot as plt
@@ -248,6 +249,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
 
 def _measure_audio_errors_worker(worker_args):
+    pid = os.getpid()
+    cpus = list(range(psutil.cpu_count()))
+    os.sched_setaffinity(pid, cpus)
     return _measure_audio_errors(*worker_args)
 
 
@@ -255,14 +259,16 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
                           sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
     # Dict of per-UID errors (if multiple notes: note-averaged values)
     errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
+    disp = Display()
+    disp.start()
+
     for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
-        mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
+        mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)       
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
             x_wav_original, _ = dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
-            disp = Display()
-            disp.start()
-            x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
-            disp.stop()
+            with utils.audio.suppress_output():
+                x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+            
             # Save .wav files
             filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
             filename_inferred = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.wav')
@@ -286,8 +292,12 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
         errors['spec_sc'].append(np.mean(sc))
         errors['mfcc13_mae'].append(np.mean(mfcc13_mae))
         errors['mfcc40_mae'].append(np.mean(mfcc40_mae))
+
+    disp.stop()
+
     for error_name in errors:
         errors[error_name] = np.asarray(errors[error_name])
+    
     return errors
 
 

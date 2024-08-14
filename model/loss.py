@@ -695,11 +695,11 @@ class PresetProcessor:
             elif isinstance(learnable_indexes, Iterable):
                 logits = u_out[:, learnable_indexes]  # contains all q odds required for BCE or CCE
                 probs = torch.softmax(logits / self.cat_softmax_t, dim=1)
-                actions = torch.argmax(probs, dim=1)
-                log_probs = torch.log(torch.gather(probs, 1, actions.unsqueeze(1)))
+                actions = torch.multinomial(probs, num_samples=1)
+                log_probs = torch.log(torch.gather(probs, 1, actions))
                 mean_log_probs += log_probs
                 n_classes = self.idx_helper.vst_param_cardinals[vst_idx]
-                full_presets[:, vst_idx] = actions / (n_classes - 1.0)
+                full_presets[:, vst_idx] = actions.squeeze() / (n_classes - 1.0)
             else:
                 raise ValueError("Bad learnable indices for vst idx = {}".format(vst_idx))
 
@@ -708,7 +708,7 @@ class PresetProcessor:
 
 
 def calculate_rewards(spec_maes: torch.Tensor, threshold: Optional[float]):
-    spec_maes = 1 / spec_maes
+    spec_maes = 1 / torch.max(torch.ones_like(spec_maes) * 0.1, spec_maes)
 
     if threshold is not None:
         spec_maes[spec_maes < (1 / threshold)] = 0

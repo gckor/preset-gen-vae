@@ -1,4 +1,4 @@
-
+import sys
 import torch
 import torch.nn as nn
 from typing import Dict, Any, List
@@ -630,6 +630,26 @@ class CNNBackbone(nn.Module):
         return self.enc_nn(x_spectrogram)
     
 
+class PatchEmbed(nn.Module):
+    """
+    Non-overlapped patch embedding
+    """
+    def __init__(self, spectrogram_channels: int = 1, out_dim: int = 256):
+        super().__init__()
+        act = nn.LeakyReLU
+        act_p = 0.1
+        self.proj = nn.Conv2d(
+            spectrogram_channels,
+            out_dim,
+            kernel_size=(16, 16),
+            stride=(16, 16), 
+        )
+        self.act = act(act_p)
+
+    def forward(self, x_spectrogram):
+        return self.act(self.proj(x_spectrogram))
+    
+
 class SynthTR(nn.Module):
     """
     SynthTR consists of CNN backbone, Transformer encoder and Transformer decoder.
@@ -640,6 +660,7 @@ class SynthTR(nn.Module):
     def __init__(
             self,
             preset_idx_helper: PresetIndexesHelper,
+            backbone: str = 'CNNBackbone',
             d_model: int = 256,
             spectrogram_channels: int = 1,
             n_queries: int = 144,
@@ -649,7 +670,7 @@ class SynthTR(nn.Module):
         self.out_dim = preset_idx_helper._learnable_preset_size
         self.cat_idx, self.num_idx = self._get_learnable_idx(preset_idx_helper)
 
-        self.backbone = CNNBackbone(spectrogram_channels, d_model)
+        self.backbone = getattr(sys.modules[__name__], backbone)(spectrogram_channels, d_model)
         self.enc_pos_embed = PositionEmbeddingSine(d_model // 2)
         self.query_pos_embed = PositionalEncoding1D(d_model, n_queries)
         self.transformer = Transformer(n_queries, d_model, **transformer_kwargs)

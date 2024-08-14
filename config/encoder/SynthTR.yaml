@@ -1,5 +1,6 @@
 model:
   encoder_kwargs:
+    backbone: PatchEmbed
     d_model: 256
     spectrogram_channels: 1
     n_queries: 144

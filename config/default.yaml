@@ -8,11 +8,11 @@ dataset:
   spectrogram_min_dB: -120.0
   algos: null
   operators: [1, 2, 3, 4, 5, 6]
-  vst_params_learned_as_categorical: all<=32
+  vst_params_learned_as_categorical: all<=34 # all<=32, all<=34, ...
   restrict_to_labels: null
   dataset_dir: /data1/Music/synth_sound_match/dexed/
-  dataset_name: numcatpp32
-  num_param_bins: -1 # -1 if no discretization of numerical params
+  dataset_name: num_as_25_cls
+  num_param_bins: 25 # -1 if no discretization of numerical params
 
 train:
   current_k_fold: 0
@@ -21,8 +21,8 @@ train:
   minibatch_size: 32
   optimizer: AdamW
   start_epoch: 0
-  n_epochs: 400
-  eval_period: 10
+  n_epochs: 200
+  eval_period: 5
   save_period: 20
   plot_period: 20
   weight_decay: 0.0001
@@ -51,14 +51,14 @@ train:
   logged_samples_count: 4
   pg_loss: True
   audio_eval_n_workers: 16
-  pg_loss_coef: 0.1
-  pg_logp_threshold: null
+  pg_loss_coef: 0.01
+  pg_logp_threshold: 0.6
   params_label_smoothing: True
   
 
 model:
-  name: pgvae_base
-  run_name: kfold0-s1
+  name: debug
+  run_name: debug
   input_type: spectrogram
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False
@@ -70,7 +70,7 @@ model:
   dim_z: 610
   params_reg_softmax: False
   params_regression_architecture: mlp_4l1024 # mlp_4l1024 / flow_realnvp_6l300
-  latent_flow_arch: realnvp_6l300 # realnvp_6l300, null
+  latent_flow_arch: null # realnvp_6l300, null
   forward_controls_loss: True
   stochastic_latent: False
   latent_quantization: null

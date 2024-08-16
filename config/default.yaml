@@ -21,7 +21,7 @@ train:
   minibatch_size: 32
   optimizer: AdamW
   start_epoch: 0
-  n_epochs: 200
+  n_epochs: 400
   eval_period: 5
   save_period: 20
   plot_period: 20
@@ -51,14 +51,18 @@ train:
   logged_samples_count: 4
   pg_loss: True
   audio_eval_n_workers: 16
-  pg_loss_coef: 0.01
+  pg_loss_coef:
+    s_value: 0.0
+    e_value: 1
+    s_epoch: 50
+    e_epoch: 200
   pg_logp_threshold: 0.6
   params_label_smoothing: True
   
 
 model:
-  name: debug
-  run_name: debug
+  name: pgloss_linear
+  run_name: kfold0-s1
   input_type: spectrogram
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False

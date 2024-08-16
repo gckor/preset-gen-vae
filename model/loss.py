@@ -713,4 +713,4 @@ def calculate_rewards(spec_maes: torch.Tensor, threshold: Optional[float]):
     if threshold is not None:
         spec_maes[spec_maes < (1 / threshold)] = 0
     
-    return spec_maes
+    return 0.1 * spec_maes

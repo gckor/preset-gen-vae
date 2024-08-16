@@ -25,7 +25,7 @@ import data.build
 import utils.figures
 import utils.exception
 from utils.audio import AudioEvaluator
-from utils.scheduler import get_scheduler
+from utils.scheduler import get_scheduler, linear_scheduler
 from utils.distrib import get_parallel_devices
 from config import load_config
 from model.encoder import SynthTR
@@ -155,15 +155,11 @@ def train_config():
                 pg_loss = -(rewards * mean_log_probs).mean()
                 scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
                 scalars_train['Specs/SpecMAE/Train'].append(spec_maes.mean().item())
-                scalars_train['Specs/PGLoss/Train'].append(pg_loss.item() * config.train.pg_loss_coef)
+                scalars_train['Specs/PGLoss/Train'].append(pg_loss.item())
                 scalars_train['Specs/RewardSampleNum'].append((spec_maes < config.train.pg_logp_threshold).sum().item())
-                if pg_loss > 1:
-                    print(f'spec_maes: {spec_maes[rewards > 0]}')
-                    print(f'rewards: {rewards[rewards > 0]}')
-                    print(f'mean_log_probs: {mean_log_probs[rewards > 0]}')
-                    print(f'pg_loss: {pg_loss}')
             else:
                 pg_loss = torch.zeros(1).to(device)
+                alpha = 0
 
             # Monitoring losses
             with torch.no_grad():
@@ -176,7 +172,9 @@ def train_config():
             scalars_train['Controls/BackpropLoss/Train'].append(cont_loss)
 
             # Update parameters
-            loss = config.train.pg_loss_coef * pg_loss + cont_loss
+            c = config.train.pg_loss_coef
+            alpha = linear_scheduler(epoch, c['s_value'], c['e_value'], c['s_epoch'], c['e_epoch'])
+            loss = alpha * pg_loss + (1 - alpha) * cont_loss
             utils.exception.check_nan_values(epoch, cont_loss, pg_loss)
             loss.backward()
             optimizer.step()
@@ -199,7 +197,7 @@ def train_config():
                         pg_loss = -(rewards * mean_log_probs).mean()
                         scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
                         scalars_valid['Specs/SpecMAE/Valid'].append(spec_maes.mean().item())
-                        scalars_valid['Specs/PGLoss/Valid'].append(pg_loss.item() * config.train.pg_loss_coef)
+                        scalars_valid['Specs/PGLoss/Valid'].append(pg_loss.item())
 
                     # Loss
                     cont_loss = controls_criterion(v_out, v_in)

@@ -638,16 +638,19 @@ class PatchEmbed(nn.Module):
         super().__init__()
         act = nn.LeakyReLU
         act_p = 0.1
-        self.proj = nn.Conv2d(
+        self.proj = layer.Conv2D(
             spectrogram_channels,
             out_dim,
             kernel_size=(16, 16),
-            stride=(16, 16), 
+            stride=(16, 16),
+            padding=2,
+            dilation=[1, 1],
+            activation=act(act_p),
+            name_prefix='patch_embed',
         )
-        self.act = act(act_p)
 
     def forward(self, x_spectrogram):
-        return self.act(self.proj(x_spectrogram))
+        return self.proj(x_spectrogram)
     
 
 class SynthTR(nn.Module):

@@ -96,7 +96,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # Rebuild model from last saved checkpoint (default: if trained on GPU, would be loaded on GPU)
     device = torch.device(eval_config.device)
     checkpoint = logs.logger.get_model_last_checkpoint(root_path, config, device=device)
-    eval_model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
+    eval_model = SynthTR(preset_idx_helper, config.model.spectrogram_size, **config.model.encoder_kwargs)
     eval_model.load_state_dict(checkpoint['ae_model_state_dict'])
     eval_model = eval_model.to(device).eval()
     torch.set_grad_enabled(False)
@@ -193,9 +193,14 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     workers_data = [(dataset, eval_midi_notes, audio_path, spec_path, eval_config.sampling_rate,
                      preset_UIDs_split[i], synth_params_inferred_split[i], i)
                     for i in range(num_workers)]
+    disp = Display()
+    disp.start()
+
     # Multi-processing is absolutely necessary
     with multiprocessing.Pool(num_workers) as p:
         audio_errors_split = p.map(_measure_audio_errors_worker, workers_data)
+
+    disp.stop()
     audio_errors = dict()
     for error_name in audio_errors_split[0]:
         audio_errors[error_name] = np.hstack([audio_errors_split[i][error_name]
@@ -242,8 +247,6 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
                           sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
     # Dict of per-UID errors (if multiple notes: note-averaged values)
     errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
-    disp = Display()
-    disp.start()
 
     for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
         mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
@@ -275,8 +278,6 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
         errors['spec_sc'].append(np.mean(sc))
         errors['mfcc13_mae'].append(np.mean(mfcc13_mae))
         errors['mfcc40_mae'].append(np.mean(mfcc40_mae))
-
-    disp.stop()
 
     for error_name in errors:
         errors[error_name] = np.asarray(errors[error_name])

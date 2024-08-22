@@ -60,7 +60,7 @@ class PositionalEncoding1D(nn.Module):
         :param max_len: max sequence length
         :param device: hardware device setting
         """
-        super(PositionalEncoding1D, self).__init__()
+        super().__init__()
 
         # same size with input matrix (for adding with input matrix)
         self.encoding = nn.Parameter(torch.zeros(max_len, d_model))
@@ -79,5 +79,5 @@ class PositionalEncoding1D(nn.Module):
         # compute positional encoding to consider positional information of words
 
     def forward(self, x):
-        bs, c, h, w = x.size()
-        return self.encoding.unsqueeze(1).repeat(1, bs, 1)
+        HW, B, C = x.size()
+        return self.encoding.unsqueeze(1).repeat(1, B, 1)

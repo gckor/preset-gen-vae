@@ -49,11 +49,11 @@ def train_config():
     preset_idx_helper = dataset.preset_indexes_helper
 
     # Initialize the model
-    model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
+    model = SynthTR(preset_idx_helper, config.model.spectrogram_size, **config.model.encoder_kwargs)
 
     config.model.input_tensor_size = (
         config.train.minibatch_size,
-        config.model.encoder_kwargs.spectrogram_channels,
+        config.model.encoder_kwargs.backbone_kwargs.spectrogram_channels,
         config.model.spectrogram_size[0],
         config.model.spectrogram_size[1]
     )

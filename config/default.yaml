@@ -21,7 +21,7 @@ train:
   minibatch_size: 32
   optimizer: AdamW
   start_epoch: 0
-  n_epochs: 400
+  n_epochs: 200
   eval_period: 5
   save_period: 20
   plot_period: 20
@@ -49,19 +49,19 @@ train:
   contrastive_coef: 0.1
   early_stop_lr_threshold: 0
   logged_samples_count: 4
-  pg_loss: True
+  pg_loss: False
   audio_eval_n_workers: 16
   pg_loss_coef:
     s_value: 0.0
-    e_value: 1
+    e_value: 1.0
     s_epoch: 50
     e_epoch: 200
-  pg_logp_threshold: 0.6
+  pg_logp_threshold: 0.4
   params_label_smoothing: True
   
 
 model:
-  name: pgloss_linear
+  name: cswin-l25-d512
   run_name: kfold0-s1
   input_type: spectrogram
   stack_spectrograms: True

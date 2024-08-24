@@ -23,8 +23,8 @@ train:
   start_epoch: 0
   n_epochs: 200
   eval_period: 5
-  save_period: 20
-  plot_period: 20
+  save_period: 10
+  plot_period: 10
   weight_decay: 0.0001
   fc_dropout: 0.3
   reg_fc_dropout: 0.4
@@ -61,8 +61,8 @@ train:
   
 
 model:
-  name: cswin-l25-d512
-  run_name: kfold0-s1
+  name: debug
+  run_name: debug
   input_type: spectrogram
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False

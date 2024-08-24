@@ -76,7 +76,7 @@ class SpectrogramCNN(nn.Module):
                     [1, 1], [1, 1], 0, [1, 1],
                     activation=nn.LeakyReLU(0.1),
                     name_prefix='enc8',
-                    batch_norm=None
+                    norm=None
                 )
             )
 
@@ -132,7 +132,7 @@ class SingleChannelCNN(nn.Module):
         self.enc_nn = nn.Sequential(
             layer.Conv2D(
                 1, 8, [5, 5], [2, 2], 2, [1, 1],
-                batch_norm=None, activation=act(act_p), name_prefix='enc1'
+                norm=None, activation=act(act_p), name_prefix='enc1'
             ),
             layer.Conv2D(
                 8, 16, [4, 4], [2, 2], 2, [1, 1],
@@ -213,23 +213,23 @@ class CNNBackbone(nn.Module):
         act_p = 0.1  # Activation param
         self.enc_nn = nn.Sequential(
             layer.Conv2D(
-                backbone_kwargs['spectrogram_channels'], 16, [5, 5], [2, 2], 2, [1, 1],
+                backbone_kwargs['spectrogram_channels'], out_dim // 16, [5, 5], [2, 2], 2, [1, 1],
                 norm=None, activation=act(act_p), name_prefix='enc1'
             ),
             layer.Conv2D(
-                16, 32, [4, 4], [2, 2], 2, [1, 1],
+                out_dim // 16, out_dim // 8, [4, 4], [2, 2], 2, [1, 1],
                 activation=act(act_p), name_prefix='enc2'
             ),
             layer.Conv2D(
-                32, 64, [4, 4], [2, 2], 2, [1, 1],
+                out_dim // 8, out_dim // 4, [4, 4], [2, 2], 2, [1, 1],
                 activation=act(act_p), name_prefix='enc3'
             ),
             layer.Conv2D(
-                64, 128, [4, 4], [2, 2], 2, [1, 1],
+                out_dim // 4, out_dim // 2, [4, 4], [2, 2], 2, [1, 1],
                 activation=act(act_p), name_prefix='enc4'
             ),
             layer.Conv2D(
-                128, out_dim, [4, 4], [2, 2], 2, [1, 1],
+                out_dim // 2, out_dim, [4, 4], [2, 2], 2, [1, 1],
                 activation=act(act_p), name_prefix='enc5'
             ),
             # layer.Conv2D(

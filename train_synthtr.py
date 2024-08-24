@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.optim
 from pyvirtualdisplay import Display
+from fvcore.nn import FlopCountAnalysis
 
 import logs.logger
 import logs.metrics
@@ -112,6 +113,12 @@ def train_config():
         end_epoch=config.train.lr_warmup_epochs,
         current_epoch=config.train.start_epoch
     )
+
+    # Calcualte FLOPs
+    model_parallel.eval()
+    x_in = torch.ones((1, 1, 257, 347)).to(device)
+    flops = FlopCountAnalysis(model_parallel, x_in)
+    print(f"Total FLOPs: {flops.total():.2e}")
 
     # Optimizer and Scheduler
     model.train()

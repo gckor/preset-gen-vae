@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
+from fvcore.nn import FlopCountAnalysis
 
 
 import model.loss
@@ -161,6 +162,17 @@ def train_config():
     if start_checkpoint is not None:
         optimizer.load_state_dict(start_checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(start_checkpoint['scheduler_state_dict'])
+
+    # Calcualte FLOPs
+    ae_model_parallel.eval()
+    reg_model_parallel.eval()
+    x_in = torch.ones((1, 1, 257, 347)).to(device)
+    sample_info = torch.ones((1, 3)).to(device)
+    z_K_sampled = torch.ones((1, 610)).to(device)
+
+    flops1 = FlopCountAnalysis(ae_model_parallel, (x_in, sample_info))
+    flops2 = FlopCountAnalysis(reg_model_parallel, z_K_sampled)
+    print(f"Total FLOPs: {flops1.total() + flops2.total():.2e}")
 
     # Model training epochs
     for epoch in tqdm(range(config.train.start_epoch, config.train.n_epochs), desc='epoch', position=0):

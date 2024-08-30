@@ -53,7 +53,7 @@ train:
   audio_eval_n_workers: 16
   pg_loss_coef:
     s_value: 0.0
-    e_value: 1
+    e_value: 1.0
     s_epoch: 50
     e_epoch: 200
   pg_logp_threshold: 0.6

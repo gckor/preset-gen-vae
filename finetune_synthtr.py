@@ -1,131 +1,192 @@
+import torch
+import torch.nn as nn
 from pathlib import Path
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from pyvirtualdisplay import Display
-import torch
-import numpy as np
-import multiprocessing
+from torch.optim.lr_scheduler import ExponentialLR
 
 from data.build import get_dataset, get_split_dataloaders
 from logs import logger
-from logs.metrics import EpochMetric
+from logs.metrics import EpochMetric, SimpleMetric
 from model.encoder import SynthTR
-from model.loss import PresetProcessor, SynthParamsLoss
-from utils.audio import SimilarityEvaluator
-
-
-def measure_spec_mae_worker(worker_args):
-    return measure_spec_mae(*worker_args)
-
-def measure_spec_mae(x_wav, full_preset_out, midi_pitch, midi_velocity):
-    spec_maes = []
-
-    for i in range(full_preset_out.shape[0]):
-        x_wav_inferred, _ = dataset._render_audio(full_preset_out[i], int(midi_pitch[i]), int(midi_velocity[i]))
-        similarity_eval = SimilarityEvaluator((x_wav[i], x_wav_inferred))
-        spec_maes.append(similarity_eval.get_mae_log_stft(return_spectrograms=False))
-
-    return np.array(spec_maes)
+from model.loss import QuantizedNumericalParamsLoss, CategoricalParamsAccuracy, PresetProcessor, SynthParamsLoss, calculate_rewards
+from utils.audio import AudioEvaluator
+from utils.scheduler import linear_scheduler
+from utils.hparams import LinearDynamicParam
+from utils.distrib import get_parallel_devices
 
 
 if __name__ == '__main__':
     # Finetune config
-    logs_root_dir = Path('/data2/personal/swc/exp_logs/preset-gen-vae')
-    model_path = logs_root_dir.joinpath('num_as_25_cls-fullsep/kfold0-s1')
-    device = 'cuda'
-    n_epochs = 20
-    midi_pitch = 60
-    midi_velocity = 85
+    ft_config = OmegaConf.load('config/finetune.yaml')
+    logs_root_dir = Path(ft_config.logs_root_dir)
+    model_path = logs_root_dir.joinpath(ft_config.model.saved_path)
 
-    # Main
+    # Load model
     config = OmegaConf.load(model_path.joinpath('config.yaml'))
+    device, device_ids = get_parallel_devices(main_cuda_device_idx=0)
     dataset = get_dataset(config)
     dataloader = get_split_dataloaders(config, dataset)
     preset_idx_helper = dataset.preset_indexes_helper
-    device = torch.device(device)
     checkpoint = logger.get_model_last_checkpoint(logs_root_dir, config, device=device)
     model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
     model.load_state_dict(checkpoint['ae_model_state_dict'])
     model = model.to(device).train()
+    model_parallel = nn.DataParallel(model, device_ids=device_ids, output_device=device)
     
+    # Parameter loss
+    if ft_config.loss.param:
+        controls_criterion = SynthParamsLoss(
+            preset_idx_helper,
+            normalize_losses=ft_config.loss.normalize_losses,
+            cat_softmax_t=ft_config.loss.cat_softmax_t,
+            label_smoothing=ft_config.loss.label_smoothing,
+        )
+
+    # Policy Gradient loss
+    if ft_config.loss.pg:
+        preset_processor = PresetProcessor(dataset, preset_idx_helper)
+        audio_evaluator = AudioEvaluator(dataset, ft_config.loss.audio_eval_n_workers, device)
+            
+    # Monitoring loss
+    controls_num_eval_criterion = QuantizedNumericalParamsLoss(preset_idx_helper, numerical_loss=nn.MSELoss(reduction='mean'))
+    controls_accuracy_criterion = CategoricalParamsAccuracy(preset_idx_helper, reduce=True, percentage_output=True)
+
+    # Optimizer and scheduler
     optimizer = torch.optim.AdamW(
             model.parameters(),
-            lr=config.train.initial_learning_rate,
-            weight_decay=config.train.weight_decay,
-            betas=config.train.adam_betas
+            lr=ft_config.optim.initial_lr,
+            weight_decay=ft_config.optim.weight_decay,
+            betas=ft_config.optim.betas
         )
-    preset_processor = PresetProcessor(dataset, preset_idx_helper)
-
-    # Parameter loss
-    controls_criterion = SynthParamsLoss(
-        preset_idx_helper,
-        config.train.normalize_losses,
-        cat_softmax_t=config.train.params_cat_softmax_temperature
-    )
+    scheduler = ExponentialLR(optimizer, ft_config.scheduler.gamma)    
 
     # Logger
-    config.model.name, config.model.run_name = 'debug', 'debug'
-    logger = logger.RunLogger(logs_root_dir, config)
-    scalars = dict()
-    scalars['SpecMAE/Train'] = EpochMetric()
-    scalars['Logprob/Train'] = EpochMetric()
-    scalars['PGLoss/Train'] = EpochMetric()
-    scalars['ParamLoss/Train'] = EpochMetric()
+    logger = logger.RunLogger(logs_root_dir, ft_config)
+    scalars_train, scalars_valid = dict(), dict()
 
-    current_step = 0
+    if ft_config.loss.pg:
+        scalars_train['Specs/SpecMAE/Train'] = EpochMetric()
+        scalars_train['Specs/LogProb/Train'] = EpochMetric()
+        scalars_train['Specs/PGLoss/Train'] = EpochMetric()
+        scalars_valid['Specs/SpecMAE/Valid'] = EpochMetric()
+        scalars_valid['Specs/LogProb/Valid'] = EpochMetric()
+        scalars_valid['Specs/PGLoss/Valid'] = EpochMetric()
+
+    if ft_config.loss.param:
+        scalars_train['Controls/ParamLoss/Train'] = EpochMetric()
+        scalars_valid['Controls/ParamLoss/Valid'] = EpochMetric()
+
+    scalars_train['Controls/Accuracy/Train'] = EpochMetric()
+    scalars_train['Controls/QLoss/Train'] = EpochMetric()
+    scalars_valid['Controls/Accuracy/Valid'] = EpochMetric()
+    scalars_valid['Controls/QLoss/Valid'] = EpochMetric()
+    scalars_train['Sched/LR'] = SimpleMetric(ft_config.optim.initial_lr)
+    scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
+        start_value=ft_config.scheduler.warmup_start_factor,
+        end_value=1.0,
+        end_epoch=ft_config.scheduler.warmup_epochs,
+        current_epoch=0,
+    )
+
+
+    # Train epochs
     disp = Display()
     disp.start()
 
-    for epoch in tqdm(range(n_epochs), desc='epoch', position=0):
-        dataloader_iter = iter(dataloader['test'])
+    for epoch in tqdm(range(ft_config.train.n_epochs), desc='epoch', position=0):
+        model_parallel.train()
+        dataloader_iter = iter(dataloader['train'])
 
-        for i in tqdm(range(len(dataloader['test'])), desc='training batch', position=1, leave=False):
+        for _, s in scalars_train.items():
+            s.on_new_epoch()
+
+        # LR warmup (bypasses the scheduler during first epochs)
+        if epoch <= ft_config.scheduler.warmup_epochs:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = scalars_train['Sched/LRwarmup'].get(epoch) * ft_config.optim.initial_lr
+
+        for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
             sample = next(dataloader_iter)
             x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
-            v_out = model(x_in)
-            full_preset_out, mean_log_probs = preset_processor(v_out)
-            batch_size = full_preset_out.shape[0]
-
-            num_workers = 16
-            x_wav_split = np.array_split(x_wav, num_workers, axis=0)
-            midi_pitch_split = np.array_split(sample_info[:, 1], num_workers, axis=0)
-            midi_velocity_split = np.array_split(sample_info[:, 2], num_workers, axis=0)
-            full_preset_out_split = np.array_split(full_preset_out, num_workers, axis=0)
-            workers_data = [(x_wav_split[i], full_preset_out_split[i], midi_pitch_split[i], midi_velocity_split[i]) for i in range(num_workers)]
-
-            with multiprocessing.Pool(num_workers) as p:
-                spec_maes_split = p.map(measure_spec_mae_worker, workers_data)
-
-            spec_maes = np.hstack(spec_maes_split)
-            spec_maes = torch.FloatTensor(spec_maes).unsqueeze(1).to(v_out.device)
-
-            # RL Spectrogram loss
-            pg_loss = (spec_maes * mean_log_probs).mean()
-
-            # Parameter loss
-            cont_loss = controls_criterion(v_out, v_in)
-
-            loss = 0.01 * pg_loss + cont_loss
-
             optimizer.zero_grad()
+            v_out = model_parallel(x_in)
+
+            if ft_config.loss.pg:
+                full_preset_out, mean_log_probs = preset_processor(v_out)
+                spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                rewards = calculate_rewards(spec_maes, ft_config.loss.pg_logp_threshold)
+                pg_loss = -(rewards * mean_log_probs).mean()
+                c = ft_config.loss.pg_coef
+                alpha = linear_scheduler(epoch, c['s_value'], c['e_value'], c['s_epoch'], c['e_epoch'])
+                scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
+                scalars_train['Specs/SpecMAE/Train'].append(spec_maes.mean().item())
+                scalars_train['Specs/PGLoss/Train'].append(pg_loss.item())
+            else:
+                pg_loss = torch.zeros(1).to(device)
+                alpha = 0
+
+            if ft_config.loss.param:
+                cont_loss = controls_criterion(v_out, v_in)
+                scalars_train['Controls/ParamLoss/Train'].append(cont_loss.item())
+            else:
+                cont_loss = torch.zeros(1).to(device)
+                alpha = 1
+
+            # Monitoring loss
+            with torch.no_grad():
+                scalars_train['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
+                scalars_train['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
+            
+            loss = alpha * pg_loss + (1 - alpha) * cont_loss
             loss.backward()
             optimizer.step()
 
-            # Logging
-            for _, s in scalars.items():
+        scalars_train['Sched/LR'] = SimpleMetric(optimizer.param_groups[0]['lr'])
+        scheduler.step()
+
+        for k, s in scalars_train.items():
+            logger.tensorboard.add_scalar(k, s.get(), epoch)
+
+        # Evaluation on validation dataset
+        if epoch % ft_config.train.eval_period == 0:
+            model_parallel.eval()
+
+            for _, s in scalars_valid.items():
                 s.on_new_epoch()
-
-            scalars['SpecMAE/Train'].append(spec_maes.mean().item())
-            scalars['Logprob/Train'].append(mean_log_probs.mean().item())
-            scalars['PGLoss/Train'].append(pg_loss.item())
-            scalars['ParamLoss/Train'].append(cont_loss.item())
-
-            for k, s in scalars.items():
-                logger.tensorboard.add_scalar(k, s.get(), current_step)
             
-            current_step += 1
+            for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
+                x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+                
+                with torch.no_grad():
+                    v_out = model_parallel(x_in)
 
-        logger.save_checkpoint(epoch, model, optimizer, optimizer)
+                    if ft_config.loss.pg:
+                        full_preset_out, mean_log_probs = preset_processor(v_out)
+                        spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                        rewards = calculate_rewards(spec_maes, ft_config.loss.pg_logp_threshold)
+                        pg_loss = -(rewards * mean_log_probs).mean()
+                        scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
+                        scalars_valid['Specs/SpecMAE/Valid'].append(spec_maes.mean().item())
+                        scalars_valid['Specs/PGLoss/Valid'].append(pg_loss.item())
+
+                    if ft_config.loss.param:
+                        cont_loss = controls_criterion(v_out, v_in)
+                        scalars_valid['Controls/ParamLoss/Valid'].append(cont_loss.item())
+                    
+                # Monitoring loss
+                scalars_valid['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
+                scalars_valid['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+
+            for k, s in scalars_valid.items():
+                logger.tensorboard.add_scalar(k, s.get(), epoch)
+                
+        if (epoch > 0 and epoch % ft_config.train.save_period == 0) or (epoch == ft_config.train.n_epochs - 1):
+            logger.save_checkpoint(epoch, model, optimizer, scheduler)
+
+        logger.on_epoch_finished(epoch)
 
     disp.stop()
+    logger.on_training_finished()
     print('Finetuning process finished')

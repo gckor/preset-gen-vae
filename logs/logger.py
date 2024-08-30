@@ -74,13 +74,13 @@ def get_scalars(config):
         start_value=config.train.lr_warmup_start_factor,
         end_value=1.0,
         end_epoch=config.train.lr_warmup_epochs,
-        current_epoch=config.train.start_epoch
+        current_epoch=0,
     )
     scalars['Sched/beta'] = LinearDynamicParam(
         start_value=config.train.beta_start_value,
         end_value=config.train.beta,
         end_epoch=config.train.beta_warmup_epochs,
-        current_epoch=config.train.start_epoch
+        current_epoch=0,
     )
     return scalars
 
@@ -104,7 +104,6 @@ class RunLogger:
         # Configs are stored but not modified by this class
         self.config = config
         self.verbosity = config.verbosity
-        self.restart_from_checkpoint = (config.train.start_epoch > 0)
 
         # Directories creation (if not exists) for model
         self.log_dir = root_path.joinpath(config.model.name, config.model.run_name)
@@ -115,16 +114,8 @@ class RunLogger:
             print("[RunLogger] Starting logging into '{}'".format(self.log_dir))
 
         # If run folder already exists
-        if self.restart_from_checkpoint:
-            print("[RunLogger] Will load saved checkpoint (previous epoch: {})"
-                    .format(self.config.train.start_epoch - 1))
-        else: # Start a new fresh training
-            if not config.allow_erase_run:
-                raise RuntimeError("Config does not allow to erase the '{}' run for model '{}'"
-                                    .format(config.model.run_name, config.model.name))
-            else:
-                erase_run_data(root_path, config)
-                self._make_model_run_dirs()
+        erase_run_data(root_path, config)
+        self._make_model_run_dirs()
 
         # Epochs, Batches, ...
         self.minibatches_count = minibatches_count
@@ -188,13 +179,13 @@ class RunLogger:
         avg_duration_s = np.asarray([(self.epoch_start_datetimes[i+1] - self.epoch_start_datetimes[i]).total_seconds()
                                      for i in range(len(self.epoch_start_datetimes) - 1)])
         avg_duration_s = avg_duration_s.mean()
-        run_total_epochs = self.config.train.n_epochs - self.config.train.start_epoch
-        remaining_datetime = avg_duration_s * (run_total_epochs - (epoch - self.config.train.start_epoch) - 1)
+        run_total_epochs = self.config.train.n_epochs
+        remaining_datetime = avg_duration_s * (run_total_epochs - epoch - 1)
         remaining_datetime = datetime.timedelta(seconds=int(remaining_datetime))
         
         if self.verbosity >= 1:
             print("End of epoch {} ({}/{}). Duration={:.1f}s, avg={:.1f}s. Estimated remaining time: {} ({})"
-                  .format(epoch, epoch-self.config.train.start_epoch + 1, run_total_epochs,
+                  .format(epoch, epoch + 1, run_total_epochs,
                           epoch_duration.total_seconds(), avg_duration_s,
                           remaining_datetime, humanize.naturaldelta(remaining_datetime)))
 

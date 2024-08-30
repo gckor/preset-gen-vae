@@ -46,32 +46,6 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
         super().__init__(log_dir, comment, purge_step, max_queue, flush_secs, filename_suffix)
         # Full-Config is required. Default constructor values allow to keep the same first constructor args
         self.config = config
-        self.resume_from_checkpoint = (config.train.start_epoch > 0)
-        self.hyper_params = dict()
-
-        # General and dataset hparams
-        self.hyper_params['batchsz'] = config.train.minibatch_size
-        self.hyper_params['kfold'] = config.train.current_k_fold
-        self.hyper_params['wdecay'] = config.train.weight_decay
-        self.hyper_params['fcdrop'] = config.train.fc_dropout
-        self.hyper_params['nmidi'] = '{}{}'.format(len(config.dataset.midi_notes),
-                                                   ("stack" if config.model.stack_spectrograms else "inde"))
-        self.hyper_params['catmodel'] = config.dataset.vst_params_learned_as_categorical
-        self.hyper_params['normloss'] = config.train.normalize_losses
-        
-        # Latent space hparams
-        self.hyper_params['z_dim'] = config.model.dim_z
-
-        # Model hparams
-        self.hyper_params['controls'] = config.synth_params_count
-        self.hyper_params['regsoftm'] = config.model.params_reg_softmax
-        self.hyper_params['regcatlo'] = 'BinCE' if config.train.params_cat_bceloss else 'CatCE'
-        self.hyper_params['regarch'] = config.model.params_regression_architecture
-        self.hyper_params['latfarch'] = config.model.latent_flow_arch
-        self.hyper_params['encarch'] = config.model.encoder_architecture
-        
-        self.hyper_params['mels'] = config.dataset.n_mel_bins
-        self.hyper_params['mindB'] = config.dataset.spectrogram_min_dB
         
     def init_hparams_and_metrics(self, metrics):
         """ Hparams and Metric initialization. Will pass if training resumes from saved checkpoint.
@@ -79,9 +53,7 @@ class TensorboardSummaryWriter(CorrectedSummaryWriter):
 
         :param metrics: Dict of BufferedMetric
         """
-        if not self.resume_from_checkpoint:  # tensorboard init at epoch 0 only
-            # Some processing on hparams can be done here... none at the moment
-            self.update_metrics(metrics)
+        self.update_metrics(metrics)
 
     def update_metrics(self, metrics):
         """ Updates Tensorboard metrics

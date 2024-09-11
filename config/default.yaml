@@ -10,7 +10,7 @@ dataset:
   operators: [1, 2, 3, 4, 5, 6]
   vst_params_learned_as_categorical: all<=34 # all<=32, all<=34, ...
   restrict_to_labels: null
-  dataset_dir: /data1/Music/synth_sound_match/dexed/
+  dataset_dir: /data1/Music/synth_sound_match
   dataset_name: num_as_25_cls
   num_param_bins: 25 # -1 if no discretization of numerical params
 
@@ -61,8 +61,8 @@ train:
   
 
 model:
-  name: pgloss_linear
-  run_name: kfold0-s1
+  name: debug
+  run_name: debug
   input_type: spectrogram
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False

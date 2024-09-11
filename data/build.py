@@ -7,19 +7,23 @@ from data import dataset
 from data.sampler import build_subset_samplers
 
 
-def get_dataset(config):
+def get_dataset(dataset_name, config):
     """
     Returns the full (main) dataset.
     """
-    full_dataset = dataset.DexedDataset(**config.dataset)
-    
-    if config.verbosity >= 2:
-        print(full_dataset.preset_indexes_helper)
-    elif config.verbosity >= 1:
-        print(full_dataset.preset_indexes_helper.short_description)
+    if dataset_name == 'dexed':
+        full_dataset = dataset.DexedDataset(**config.dataset)
+        
+        if config.verbosity >= 2:
+            print(full_dataset.preset_indexes_helper)
+        elif config.verbosity >= 1:
+            print(full_dataset.preset_indexes_helper.short_description)
 
-    config.synth_params_count = full_dataset.learnable_params_count
-    config.learnable_params_tensor_length = full_dataset.preset_indexes_helper._learnable_preset_size
+        config.synth_params_count = full_dataset.learnable_params_count
+        config.learnable_params_tensor_length = full_dataset.preset_indexes_helper._learnable_preset_size
+    else:
+        full_dataset = dataset.SurgeDataset(**config.dataset)
+        
     return full_dataset
 
 

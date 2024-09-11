@@ -77,7 +77,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         self.spectrogram_normalization = spectrogram_normalization
         self.spec_stats = None
         self.sample_rate = sample_rate
-        self.dataset_dir = pathlib.Path(dataset_dir)
+        self.dataset_dir = pathlib.Path(dataset_dir).joinpath('dexed')
         self.dataset_name = dataset_name
         self.wav_files_dir = self.dataset_dir.joinpath('wav')
         self.spec_files_dir = self.dataset_dir.joinpath('spectrogram')

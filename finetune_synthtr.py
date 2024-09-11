@@ -26,9 +26,10 @@ if __name__ == '__main__':
     # Load model
     config = OmegaConf.load(model_path.joinpath('config.yaml'))
     device, device_ids = get_parallel_devices(main_cuda_device_idx=0)
-    dataset = get_dataset(config)
-    dataloader = get_split_dataloaders(config, dataset)
-    preset_idx_helper = dataset.preset_indexes_helper
+    dexed_dataset = get_dataset('dexed', config)
+    ft_dataset = get_dataset(ft_config.train.dataset, config)
+    dataloader = get_split_dataloaders(config, ft_dataset)
+    preset_idx_helper = dexed_dataset.preset_indexes_helper
     checkpoint = logger.get_model_last_checkpoint(logs_root_dir, config, device=device)
     model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
     model.load_state_dict(checkpoint['ae_model_state_dict'])
@@ -46,8 +47,8 @@ if __name__ == '__main__':
 
     # Policy Gradient loss
     if ft_config.loss.pg:
-        preset_processor = PresetProcessor(dataset, preset_idx_helper)
-        audio_evaluator = AudioEvaluator(dataset, ft_config.loss.audio_eval_n_workers, device)
+        preset_processor = PresetProcessor(dexed_dataset, preset_idx_helper)
+        audio_evaluator = AudioEvaluator(dexed_dataset, ft_config.loss.audio_eval_n_workers, device)
             
     # Monitoring loss
     controls_num_eval_criterion = QuantizedNumericalParamsLoss(preset_idx_helper, numerical_loss=nn.MSELoss(reduction='mean'))
@@ -78,10 +79,12 @@ if __name__ == '__main__':
         scalars_train['Controls/ParamLoss/Train'] = EpochMetric()
         scalars_valid['Controls/ParamLoss/Valid'] = EpochMetric()
 
-    scalars_train['Controls/Accuracy/Train'] = EpochMetric()
-    scalars_train['Controls/QLoss/Train'] = EpochMetric()
-    scalars_valid['Controls/Accuracy/Valid'] = EpochMetric()
-    scalars_valid['Controls/QLoss/Valid'] = EpochMetric()
+    if ft_config.train.dataset == 'dexed':
+        scalars_train['Controls/Accuracy/Train'] = EpochMetric()
+        scalars_train['Controls/QLoss/Train'] = EpochMetric()
+        scalars_valid['Controls/Accuracy/Valid'] = EpochMetric()
+        scalars_valid['Controls/QLoss/Valid'] = EpochMetric()
+        
     scalars_train['Sched/LR'] = SimpleMetric(ft_config.optim.initial_lr)
     scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
         start_value=ft_config.scheduler.warmup_start_factor,
@@ -134,10 +137,10 @@ if __name__ == '__main__':
                 cont_loss = torch.zeros(1).to(device)
                 alpha = 1
 
-            # Monitoring loss
-            with torch.no_grad():
-                scalars_train['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
-                scalars_train['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
+            if ft_config.train.dataset == 'dexed':
+                with torch.no_grad():
+                    scalars_train['Controls/QLoss/Train'].append(controls_num_eval_criterion(v_out, v_in))
+                    scalars_train['Controls/Accuracy/Train'].append(controls_accuracy_criterion(v_out, v_in))
             
             loss = alpha * pg_loss + (1 - alpha) * cont_loss
             loss.backward()
@@ -174,10 +177,11 @@ if __name__ == '__main__':
                     if ft_config.loss.param:
                         cont_loss = controls_criterion(v_out, v_in)
                         scalars_valid['Controls/ParamLoss/Valid'].append(cont_loss.item())
-                    
-                # Monitoring loss
-                scalars_valid['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
-                scalars_valid['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
+                
+                if ft_config.train.dataset == 'dexed':
+                    # Monitoring loss
+                    scalars_valid['Controls/QLoss/Valid'].append(controls_num_eval_criterion(v_out, v_in))
+                    scalars_valid['Controls/Accuracy/Valid'].append(controls_accuracy_criterion(v_out, v_in))
 
             for k, s in scalars_valid.items():
                 logger.tensorboard.add_scalar(k, s.get(), epoch)

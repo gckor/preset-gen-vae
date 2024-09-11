@@ -152,17 +152,14 @@ class RunLogger:
         # New/Saved configs compatibility must have been checked before calling this function
         OmegaConf.save(self.config, self.log_dir.joinpath('config.yaml'))
 
-        if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
-            self.write_model_summary(main_model, input_tensor_size, 'VAE')
-
+        self.write_model_summary(main_model, input_tensor_size, 'VAE')
         self.epoch_start_datetimes = [datetime.datetime.now()]
 
     def write_model_summary(self, model, input_tensor_size, model_name):
-        if not self.restart_from_checkpoint:  # Graphs written at epoch 0 only
-            description = torchinfo.summary(model, tuple(input_tensor_size), depth=8, device='cpu', verbose=0)
-            
-            with open(self.log_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
-                f.write(description.__str__())
+        description = torchinfo.summary(model, tuple(input_tensor_size), depth=8, device='cpu', verbose=0)
+        
+        with open(self.log_dir.joinpath('torchinfo_summary_{}.txt'.format(model_name)), 'w') as f:
+            f.write(description.__str__())
 
     def get_previous_config(self):
         full_config = OmegaConf.load(self.log_dir.joinpath('config.yaml'))

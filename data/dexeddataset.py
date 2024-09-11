@@ -314,8 +314,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             synth_param = data['synth_param'][:]
             sample_info = data['sample_info'][:]
             label = data['label'][:]
-        waveform = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)[0].astype(np.float32)
-        spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity).unsqueeze(0)
+        waveform = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
+        spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
         return waveform, spectrogram, synth_param, sample_info, label
     
     def get_spec_file_path(self, preset_UID, midi_note, midi_velocity):
@@ -335,7 +335,7 @@ class DexedDataset(abstractbasedataset.PresetDataset):
             elif self.spectrogram_normalization == 'mean_std':
                 spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
 
-            return spectrogram
+            return spectrogram.unsqueeze(0)
         except RuntimeError:
             raise RuntimeError("[data/dataset.py] Can't open file {}. Please pre-render spectrogram files for this "
                                "dataset configuration.".format(file_path))
@@ -349,7 +349,8 @@ class DexedDataset(abstractbasedataset.PresetDataset):
     def get_wav_file(self, preset_UID, midi_note, midi_velocity):
         file_path = self.get_wav_file_path(preset_UID, midi_note, midi_velocity)
         try:
-            return soundfile.read(file_path)
+            waveform = soundfile.read(file_path)[0].astype(np.float32)
+            return waveform
         except RuntimeError:
             raise RuntimeError("[data/dataset.py] Can't open file {}. Please pre-render audio files for this "
                                "dataset configuration.".format(file_path))

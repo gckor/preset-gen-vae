@@ -18,5 +18,4 @@ figures/*
 exports/*
 
 # Analysis notebooks
-eval_analysis.ipynb
-data_analysis.ipynb
+*.ipynb

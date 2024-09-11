@@ -5,14 +5,13 @@ Concrete preset Datasets are available from this module but are implemented in t
 """
 
 
-from . import dexeddataset
-# TODO import future datasets
+from . import dexeddataset, surgedataset
+
 
 # ====================== Concrete dataset classes ======================
 DexedDataset = dexeddataset.DexedDataset
-# TODO add future datasets here
+SurgeDataset = surgedataset.SurgeDataset
 # ======================================================================
-
 
 
 def model_config_to_dataset_kwargs(model_config):

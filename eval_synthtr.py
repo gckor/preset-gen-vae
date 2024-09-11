@@ -73,7 +73,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     config = OmegaConf.load(path_to_model_dir.joinpath('config.yaml'))
     
     # Eval file to be created
-    eval_pickle_file_path = get_eval_pickle_file_path(path_to_model_dir, eval_config.dataset)
+    eval_pickle_file_path = get_eval_pickle_file_path(path_to_model_dir, eval_config.dataset[1])
     
     # Return now if eval already exists, and should not be overridden
     if os.path.exists(eval_pickle_file_path):
@@ -87,11 +87,12 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     config.verbosity = 1
     config.train.minibatch_size = eval_config.minibatch_size  # Will setup dataloaders as requested
     
-    dataset = data.build.get_dataset(config)
-    dataloader = data.build.get_split_dataloaders(config, dataset)
+    dexed_dataset = data.build.get_dataset('dexed', config)
+    eval_dataset = data.build.get_dataset(eval_config.dataset[0], config)
+    dataloader = data.build.get_split_dataloaders(config, eval_dataset)
 
     # Synth parameter index information for alignment   
-    preset_idx_helper = dataset.preset_indexes_helper
+    preset_idx_helper = dexed_dataset.preset_indexes_helper
 
     # Rebuild model from last saved checkpoint (default: if trained on GPU, would be loaded on GPU)
     device = torch.device(eval_config.device)
@@ -116,27 +117,27 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     eval_accuracies = list()
     eval_maes = list()
     # Parameters criteria
-    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper,
+    controls_num_mse_criterion = model.loss.QuantizedNumericalParamsLoss(dexed_dataset.preset_indexes_helper,
                                                                          numerical_loss=nn.MSELoss(reduction='mean'))
-    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dataset.preset_indexes_helper, reduce=False,
+    controls_num_mae_criterion = model.loss.QuantizedNumericalParamsLoss(dexed_dataset.preset_indexes_helper, reduce=False,
                                                                          numerical_loss=nn.L1Loss(reduction='mean'))
     controls_accuracy_criterion = model.loss.CategoricalParamsAccuracy(
-        dataset.preset_indexes_helper,
+        dexed_dataset.preset_indexes_helper,
         reduce=False,
         percentage_output=True
     )
     # Controls related to MIDI key and velocity (to compare single- and multi-channel spectrograms models)
-    if dataset.synth_name.lower() == "dexed":
+    if dexed_dataset.synth_name.lower() == "dexed":
         dynamic_vst_controls_indexes = synth.dexed.Dexed.get_midi_key_related_param_indexes()
     else:
         raise NotImplementedError("")
     dynamic_controls_num_mae_crit = model.loss.QuantizedNumericalParamsLoss(
-        dataset.preset_indexes_helper,
+        dexed_dataset.preset_indexes_helper,
         numerical_loss=nn.L1Loss(reduction='mean'),
         limited_vst_params_indexes=dynamic_vst_controls_indexes
     )
     dynamic_controls_acc_crit = model.loss.CategoricalParamsAccuracy(
-        dataset.preset_indexes_helper,
+        dexed_dataset.preset_indexes_helper,
         reduce=True, 
         limited_vst_params_indexes=dynamic_vst_controls_indexes
     )
@@ -144,40 +145,43 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # 1) Infer all preset parameters
     assert eval_config.minibatch_size == 1  # Required for per-preset metrics
 
-    for i, sample in tqdm(enumerate(dataloader[eval_config.dataset]), total=len(dataloader[eval_config.dataset])):
+    for i, sample in tqdm(enumerate(dataloader[eval_config.dataset[1]]), total=len(dataloader[eval_config.dataset[1]])):
         x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
         v_out = eval_model(x_in)
-
-        # Metrics
-        accuracies = controls_accuracy_criterion(v_out, v_in)
-        acc_value = np.asarray([v for _, v in accuracies.items()]).mean()
-        maes, mae_value = controls_num_mae_criterion(v_out, v_in)
-
-        # Parameters inference metrics
-        preset_UIDs.append(sample_info[0, 0].item())
         eval_metrics.append(dict())
         eval_metrics[-1]['preset_UID'] = sample_info[0, 0].item()
-        eval_metrics[-1]['num_controls_MSEQ'] = controls_num_mse_criterion(v_out, v_in).item()
-        eval_metrics[-1]['num_controls_MAEQ'] = mae_value.item()
-        eval_metrics[-1]['cat_controls_acc'] = acc_value
-        eval_metrics[-1]['num_dyn_cont_MAEQ'] = dynamic_controls_num_mae_crit(v_out, v_in).item()
-        eval_metrics[-1]['cat_dyn_cont_acc'] = dynamic_controls_acc_crit(v_out, v_in)
-        # Compute corresponding flexible presets instances
-        in_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_in, dataset=dataset)
-        out_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_out, dataset=dataset)
-        # VST-compatible full presets (1-element batch of presets)
-        synth_params_GT.append(in_presets_instance.get_full()[0, :].cpu().numpy())
+
+        if eval_config.dataset[0] == 'dexed':
+            # Metrics
+            accuracies = controls_accuracy_criterion(v_out, v_in)
+            acc_value = np.asarray([v for _, v in accuracies.items()]).mean()
+            maes, mae_value = controls_num_mae_criterion(v_out, v_in)
+
+            # Parameters inference metrics
+            eval_metrics[-1]['num_controls_MSEQ'] = controls_num_mse_criterion(v_out, v_in).item()
+            eval_metrics[-1]['num_controls_MAEQ'] = mae_value.item()
+            eval_metrics[-1]['cat_controls_acc'] = acc_value
+            eval_metrics[-1]['num_dyn_cont_MAEQ'] = dynamic_controls_num_mae_crit(v_out, v_in).item()
+            eval_metrics[-1]['cat_dyn_cont_acc'] = dynamic_controls_acc_crit(v_out, v_in)
+            eval_accuracies.append(accuracies)
+            eval_maes.append(maes)
+            in_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_in, dataset=dexed_dataset)
+            synth_params_GT.append(in_presets_instance.get_full()[0, :].cpu().numpy())
+
+        preset_UIDs.append(sample_info[0, 0].item())
+        out_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_out, dataset=dexed_dataset)
         synth_params_inferred.append(out_presets_instance.get_full()[0, :].cpu().numpy())
-        eval_accuracies.append(accuracies)
-        eval_maes.append(maes)
+        
 
     # Numpy matrix of preset values. Reconstructed spectrograms are not stored
-    synth_params_GT, synth_params_inferred = np.asarray(synth_params_GT), np.asarray(synth_params_inferred)
+    synth_params_inferred = np.asarray(synth_params_inferred)
     preset_UIDs = np.asarray(preset_UIDs)
-    acc_df = pd.DataFrame(eval_accuracies, index=preset_UIDs)
-    mae_df = pd.DataFrame(eval_maes, index=preset_UIDs)
-    acc_df.to_pickle(path_to_model_dir.joinpath('cat_params_acc.pickle'))
-    mae_df.to_pickle(path_to_model_dir.joinpath('num_params_mae.pickle'))
+
+    if eval_config.dataset[0] == 'dexed':
+        acc_df = pd.DataFrame(eval_accuracies, index=preset_UIDs)
+        mae_df = pd.DataFrame(eval_maes, index=preset_UIDs)
+        acc_df.to_pickle(path_to_model_dir.joinpath('cat_params_acc.pickle'))
+        mae_df.to_pickle(path_to_model_dir.joinpath('num_params_mae.pickle'))
 
 
     # 2) Evaluate audio from inferred synth parameters
@@ -188,9 +192,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     num_workers = int(np.round(os.cpu_count() * eval_config.multiprocess_cores_ratio))
     preset_UIDs_split = np.array_split(preset_UIDs, num_workers, axis=0)
-    synth_params_GT_split = np.array_split(synth_params_GT, num_workers, axis=0)
     synth_params_inferred_split = np.array_split(synth_params_inferred, num_workers, axis=0)
-    workers_data = [(dataset, eval_midi_notes, audio_path, spec_path, eval_config.sampling_rate,
+    workers_data = [(dexed_dataset, eval_dataset, eval_midi_notes, audio_path, spec_path, eval_config.sampling_rate,
                      preset_UIDs_split[i], synth_params_inferred_split[i], i)
                     for i in range(num_workers)]
     
@@ -202,8 +205,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         audio_errors_split = p.map(_measure_audio_errors_worker, workers_data)
 
     disp.stop()
-
     audio_errors = dict()
+
     for error_name in audio_errors_split[0]:
         audio_errors[error_name] = np.hstack([audio_errors_split[i][error_name]
                                               for i in range(len(audio_errors_split))])
@@ -211,9 +214,11 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     # 3) Concatenate results into a dataframe
     eval_df = pd.DataFrame(eval_metrics)
+    
     # append audio errors
     for error_name, err in audio_errors.items():
         eval_df[error_name] = err
+
     # multi-note case: average results with the same preset UID (Python set prevents duplicates)
     # This also sorts the dataframe presets UIDs and will done for all evaluations (sub-optimal but small data structs)
     preset_UIDs_no_duplicates = list(set(eval_df['preset_UID'].values))
@@ -245,17 +250,18 @@ def _measure_audio_errors_worker(worker_args):
     return _measure_audio_errors(*worker_args)
 
 
-def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_notes, audio_path, spec_path,
+def _measure_audio_errors(dexed_dataset, eval_dataset, midi_notes, audio_path, spec_path,
                           sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
     # Dict of per-UID errors (if multiple notes: note-averaged values)
     errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
 
     for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
         mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
+
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
-            x_wav_original, _ = dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
+            x_wav_original = eval_dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
             with utils.audio.suppress_output():
-                x_wav_inferred, _ = dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+                x_wav_inferred, _ = dexed_dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
 
             # Save .wav files
             filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
@@ -275,6 +281,7 @@ def _measure_audio_errors(dataset: data.abstractbasedataset.PresetDataset, midi_
             sc.append(similarity_eval.get_spectral_convergence(return_spectrograms=False))
             mfcc13_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=13))
             mfcc40_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=40))
+
         # Average errors over all played MIDI notes
         errors['spec_mae'].append(np.mean(mae))
         errors['spec_sc'].append(np.mean(sc))
@@ -292,5 +299,5 @@ if __name__ == "__main__":
     eval_config = evalconfig.eval
 
     print("Starting models evaluation using configuration from evalconfig.py, using '{}' dataset"
-          .format(eval_config.dataset))
+          .format(eval_config.dataset[1]))
     evaluate_all_models(eval_config)

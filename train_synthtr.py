@@ -40,7 +40,7 @@ def train_config():
     after loading the datasets) - so they can be different from what's currently written in config.py.
     """
     config = load_config()
-    dataset = data.build.get_dataset(config)
+    dataset = data.build.get_dataset('dexed', config)
     dataloader = data.build.get_split_dataloaders(config, dataset)
     root_path = Path(config.logs_root_dir)
     logger = logs.logger.RunLogger(root_path, config)

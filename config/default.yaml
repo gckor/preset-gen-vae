@@ -67,7 +67,7 @@ model:
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False
   concat_midi_to_z: False
-  sampling_rate: 22050
+  sampling_rate: 44100
   waveform_size: 88576
   spectrogram_size: [257, 347]
   input_tensor_size: null

@@ -330,10 +330,9 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         dummy_spectrogram, _, _, _ = self.__getitem__(0)
         return dummy_spectrogram.size()
 
-    @staticmethod
-    def _get_spectrogram_stats_folder():
+    def _get_spectrogram_stats_folder(self):
         """ Returns the path of a './stats' directory inside this script's directory """
-        return pathlib.Path(__file__).parent.joinpath('stats')
+        return self.dataset_dir.joinpath('stats')
 
     def _get_spectrogram_stats_file_stem(self):
         """ Returns the spectrogram stats file base name (without path, suffix and extension) """
@@ -389,8 +388,9 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         full_stats = {'UID': np.zeros((len(worker_args),), dtype=np.int),
                       'min': np.zeros((len(worker_args),)), 'max': np.zeros((len(worker_args),)),
                       'mean': np.zeros((len(worker_args),)), 'var': np.zeros((len(worker_args),))}
-        for i, (preset_UID, midi_pitch, midi_velocity) in tqdm(enumerate(worker_args), total=len(worker_args)):
-            x_wav, Fs = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
+        for i, args in tqdm(enumerate(worker_args), total=len(worker_args)):
+            preset_UID, midi_pitch, midi_velocity = args[0]
+            x_wav = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
             # We use the exact same spectrogram as the dataloader will
             tensor_spectrogram = self.spectrogram(x_wav)
             full_stats['UID'][i] = preset_UID
@@ -416,5 +416,5 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             workers_args.append(list())  # New worker argument
             for preset_UID in preset_UIDs:
                 for midi_pitch, midi_vel in self.midi_notes:
-                    workers_args[worker_idx].append((preset_UID, midi_pitch, midi_vel))
+                    workers_args[worker_idx].append([(preset_UID, midi_pitch, midi_vel), worker_idx])
         return workers_args

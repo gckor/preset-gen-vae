@@ -219,11 +219,11 @@ class Dexed:
 
     def __init__(
             self,
-            plugin_path="/home/dexed/Builds/Linux/build/Dexed.so",
+            plugin_path= '/home/dexed/Builds/Linux/build/Dexed.so',
             midi_note_duration_s=3.0,
             render_duration_s=4.0,
             sample_rate=22050,  # librosa default sr
-            buffer_size=512,
+            buffer_size=1,
             fft_size=512,
             fadeout_duration_s=0.1,
         ):

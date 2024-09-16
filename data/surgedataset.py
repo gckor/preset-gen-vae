@@ -11,13 +11,15 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from pathlib import Path
+from scipy.signal import resample
 from utils.audio import MelSpectrogram
 from typing import Tuple
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_dir', type=str, default='/data1/Music/synth_sound_match/surge')
-parser.add_argument('--sr', type=int, default=22050, help='sample rate')
+parser.add_argument('--render_sr', type=int, default=44100, help='sample rate that synth renders')
+parser.add_argument('--model_sr', type=int, default=22050, help='sample rate that model receives')
 parser.add_argument('--pitch', type=int, default=60, help='0 ~ 127')
 parser.add_argument('--velocity', type=int, default=85, help='0 ~ 127')
 
@@ -53,8 +55,8 @@ class SurgeDataset(torch.utils.data.Dataset):
         preset_UID = i // self.midi_notes_per_preset
         midi_pitch, midi_velocity = self.midi_notes[0]
         data = self.get_data_from_file(preset_UID, midi_pitch, midi_velocity)
-        waveform, spectrogram, synth_param, sample_info = data        
-        return waveform, spectrogram, synth_param, sample_info
+        waveform, spectrogram, synth_param = data        
+        return waveform, spectrogram, synth_param, preset_UID
     
     @property
     def midi_notes_per_preset(self):
@@ -98,11 +100,10 @@ class SurgeDataset(torch.utils.data.Dataset):
         return spectrogram.unsqueeze(0)
     
     def get_data_from_file(self, preset_UID, midi_pitch, midi_velocity):
-        synth_param = torch.zeros(1)
-        sample_info = np.array([preset_UID, midi_pitch, midi_velocity], dtype=np.int32)
+        synth_param = torch.ones(1)
         waveform = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
         spectrogram = self.get_spec_file(preset_UID, midi_pitch, midi_velocity)
-        return waveform, spectrogram, synth_param, sample_info
+        return waveform, spectrogram, synth_param
 
 
 if __name__ == '__main__':
@@ -113,10 +114,10 @@ if __name__ == '__main__':
     os.makedirs(wav_dir, exist_ok=True)
     os.makedirs(spec_dir, exist_ok=True)
     os.makedirs(stats_dir, exist_ok=True)
-    s = surgepy.createSurge(args.sr)
+    s = surgepy.createSurge(args.render_sr)
     fd = s.getFactoryDataPath()
     preset_paths = list(Path(fd).rglob('*.fxp'))
-    spectrogram = MelSpectrogram(1024, 256, -120.0, 257, args.sr)
+    spectrogram = MelSpectrogram(1024, 256, -120.0, 257, args.model_sr)
     full_stats = {
         'UID': np.zeros((len(preset_paths),), dtype=np.int32),
         'min': np.zeros((len(preset_paths),)),
@@ -128,7 +129,7 @@ if __name__ == '__main__':
     for preset_UID, path in tqdm(enumerate(preset_paths), total=len(preset_paths)):
         s.loadPatch(str(path))
         onesec = int(s.getSampleRate() / s.getBlockSize())
-        buf = s.createMultiBlock(int(4.018 * onesec))
+        buf = s.createMultiBlock(4 * onesec + 1)
         pos = 0
 
         s.playNote(0, args.pitch, args.velocity, 0)
@@ -136,12 +137,16 @@ if __name__ == '__main__':
         pos = pos + onesec * 3
 
         s.releaseNote(0, args.pitch, 0 )
-        s.processMultiBlock(buf, pos, onesec)
+        s.processMultiBlock(buf, pos, onesec + 1)
+        
+        wav = buf[0][:args.render_sr * 4]
+        num_samples = int(len(wav) * args.model_sr / args.render_sr)
+        resampled_wav = resample(wav, num_samples)
 
         filename = "preset{:06d}_midi{:03d}vel{:03d}".format(preset_UID, args.pitch, args.velocity)
-        soundfile.write(os.path.join(wav_dir, filename + '.wav'), buf[0], args.sr, subtype='FLOAT')        
-        wav = buf[0]
-        tensor_spectrogram = spectrogram(wav)
+        soundfile.write(os.path.join(wav_dir, filename + '.wav'), resampled_wav, args.model_sr, subtype='FLOAT')        
+        
+        tensor_spectrogram = spectrogram(resampled_wav)
         full_stats['UID'][preset_UID] = preset_UID
         full_stats['min'][preset_UID] = torch.min(tensor_spectrogram).item()
         full_stats['max'][preset_UID] = torch.max(tensor_spectrogram).item()

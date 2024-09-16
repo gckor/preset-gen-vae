@@ -20,11 +20,11 @@ train:
   test_holdout_proportion: 0.2
   minibatch_size: 32
   optimizer: AdamW
-  start_epoch: 0
+  start_epoch: 50
   n_epochs: 400
-  eval_period: 5
-  save_period: 20
-  plot_period: 20
+  eval_period: 10
+  save_period: 10
+  plot_period: 10
   weight_decay: 0.0001
   fc_dropout: 0.3
   reg_fc_dropout: 0.4
@@ -55,21 +55,24 @@ train:
     s_value: 0.0
     e_value: 1.0
     s_epoch: 50
-    e_epoch: 200
-  pg_logp_threshold: 0.6
+    e_epoch: 150
+  pg_nfft: [1024] # [2048, 1024, 512, 256, 128, 64]
+  pg_hop: [256] # [512, 256, 128, 64, 32, 16]
+  pg_logp_threshold: 0.8
   params_label_smoothing: True
   
 
 model:
-  name: debug
-  run_name: debug
+  name: gradual-newdata-from50ep
+  run_name: kfold0-s1
   input_type: spectrogram
   stack_spectrograms: True
   stack_specs_deepest_features_mix: False
   concat_midi_to_z: False
   sampling_rate: 44100
-  waveform_size: 88576
-  spectrogram_size: [257, 347]
+  write_sr: 22050
+  waveform_size: 88200 # 88576
+  spectrogram_size: [257, 345] # [257, 347]
   input_tensor_size: null
   dim_z: 610
   params_reg_softmax: False

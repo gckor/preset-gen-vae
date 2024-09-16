@@ -114,8 +114,8 @@ class RunLogger:
             print("[RunLogger] Starting logging into '{}'".format(self.log_dir))
 
         # If run folder already exists
-        erase_run_data(root_path, config)
-        self._make_model_run_dirs()
+        # erase_run_data(root_path, config)
+        # self._make_model_run_dirs()
 
         # Epochs, Batches, ...
         self.minibatches_count = minibatches_count

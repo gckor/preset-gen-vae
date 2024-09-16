@@ -11,7 +11,7 @@ from logs import logger
 from logs.metrics import EpochMetric, SimpleMetric
 from model.encoder import SynthTR
 from model.loss import QuantizedNumericalParamsLoss, CategoricalParamsAccuracy, PresetProcessor, SynthParamsLoss, calculate_rewards
-from utils.audio import AudioEvaluator
+from utils.audio import AudioRenderer, Spectrogram_Processor
 from utils.scheduler import linear_scheduler
 from utils.hparams import LinearDynamicParam
 from utils.distrib import get_parallel_devices
@@ -30,9 +30,7 @@ if __name__ == '__main__':
     ft_dataset = get_dataset(ft_config.train.dataset, config)
     dataloader = get_split_dataloaders(config, ft_dataset)
     preset_idx_helper = dexed_dataset.preset_indexes_helper
-    checkpoint = logger.get_model_last_checkpoint(logs_root_dir, config, device=device)
     model = SynthTR(preset_idx_helper, **config.model.encoder_kwargs)
-    model.load_state_dict(checkpoint['ae_model_state_dict'])
     model = model.to(device).train()
     model_parallel = nn.DataParallel(model, device_ids=device_ids, output_device=device)
     
@@ -48,7 +46,17 @@ if __name__ == '__main__':
     # Policy Gradient loss
     if ft_config.loss.pg:
         preset_processor = PresetProcessor(dexed_dataset, preset_idx_helper)
-        audio_evaluator = AudioEvaluator(dexed_dataset, ft_config.loss.audio_eval_n_workers, device)
+        audio_renderer = AudioRenderer(
+            dexed_dataset,
+            config.model.write_sr,
+            ft_config.loss.audio_eval_n_workers,
+            device
+        )
+        spec_processor = Spectrogram_Processor(
+            config.train.pg_nfft,
+            config.train.pg_hop,
+            config.model.write_sr,
+        ).to(device)
             
     # Monitoring loss
     controls_num_eval_criterion = QuantizedNumericalParamsLoss(preset_idx_helper, numerical_loss=nn.MSELoss(reduction='mean'))
@@ -62,6 +70,13 @@ if __name__ == '__main__':
             betas=ft_config.optim.betas
         )
     scheduler = ExponentialLR(optimizer, ft_config.scheduler.gamma)    
+    
+    checkpoint = logger.get_model_last_checkpoint(logs_root_dir, config, device=device)
+    model.load_state_dict(checkpoint['ae_model_state_dict'])
+    
+    if ft_config.train.start_epoch > 0:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     # Logger
     logger = logger.RunLogger(logs_root_dir, ft_config)
@@ -98,7 +113,7 @@ if __name__ == '__main__':
     disp = Display()
     disp.start()
 
-    for epoch in tqdm(range(ft_config.train.n_epochs), desc='epoch', position=0):
+    for epoch in tqdm(range(ft_config.train.start_epoch, ft_config.train.n_epochs), desc='epoch', position=0):
         model_parallel.train()
         dataloader_iter = iter(dataloader['train'])
 
@@ -112,13 +127,14 @@ if __name__ == '__main__':
 
         for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
             sample = next(dataloader_iter)
-            x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+            x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
             optimizer.zero_grad()
             v_out = model_parallel(x_in)
 
             if ft_config.loss.pg:
                 full_preset_out, mean_log_probs = preset_processor(v_out)
-                spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                inferred_wavs = audio_renderer.multi_process_render(full_preset_out)
+                spec_maes = spec_processor.calculate_mae(x_wav, inferred_wavs)
                 rewards = calculate_rewards(spec_maes, ft_config.loss.pg_logp_threshold)
                 pg_loss = -(rewards * mean_log_probs).mean()
                 c = ft_config.loss.pg_coef
@@ -160,14 +176,15 @@ if __name__ == '__main__':
                 s.on_new_epoch()
             
             for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
-                x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+                x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 
                 with torch.no_grad():
                     v_out = model_parallel(x_in)
 
                     if ft_config.loss.pg:
                         full_preset_out, mean_log_probs = preset_processor(v_out)
-                        spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                        inferred_wavs = audio_renderer.multi_process_measure(full_preset_out)
+                        spec_maes = spec_processor.calculate_mae(x_wav, inferred_wavs)
                         rewards = calculate_rewards(spec_maes, ft_config.loss.pg_logp_threshold)
                         pg_loss = -(rewards * mean_log_probs).mean()
                         scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())

@@ -672,6 +672,7 @@ class PresetProcessor:
         self,
         dataset: DexedDataset,
         idx_helper: PresetIndexesHelper,
+        device: str,
         cat_softmax_t: float = 0.1,
     ):
         """
@@ -680,6 +681,7 @@ class PresetProcessor:
         """
         self.params_default_values = dataset.params_default_values
         self.idx_helper = idx_helper
+        self.device = device
         self.cat_softmax_t = cat_softmax_t
         self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
 
@@ -687,7 +689,7 @@ class PresetProcessor:
         """ Categorical parameters must be one-hot encoded. """
         batch_size = u_out.shape[0]
         full_presets = -0.1 * torch.ones((batch_size, self.idx_helper.full_preset_size))
-        mean_log_probs = torch.zeros((batch_size, 1), device=u_out.device)
+        mean_log_probs = torch.zeros((batch_size, 1), device=self.device)
 
         for vst_idx, learnable_indexes in enumerate(self.idx_helper.full_to_learnable):
             if self.idx_helper.vst_param_learnable_model[vst_idx] is None:

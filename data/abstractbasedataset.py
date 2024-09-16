@@ -67,16 +67,17 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         # Attributes to be set by the child concrete class
         self.valid_preset_UIDs = np.zeros((0,))  # UIDs (may be indexes) of valid presets for this dataset
         self.learnable_params_idx = list()  # Indexes of learnable VSTi params (some params may be constant or unused)
+        self.sample_rate = sample_rate
+        self.spectrogram_min_dB = spectrogram_min_dB
         # Spectrogram utility class
         if self.n_mel_bins <= 0:
             self.spectrogram = utils.audio.Spectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB)
         else:
             self.spectrogram = utils.audio.MelSpectrogram(self.n_fft, self.fft_hop, spectrogram_min_dB,
-                                                          self.n_mel_bins, sample_rate)
+                                                          self.n_mel_bins, self.sample_rate)
         # spectrogram min/max/mean/std statistics: must be loaded after super() ctor (depend on child class args)
         self.spectrogram_normalization = spectrogram_normalization
         self.spec_stats = None
-        self.sample_rate = sample_rate
         self.dataset_dir = pathlib.Path(dataset_dir).joinpath('dexed')
         self.dataset_name = dataset_name
         self.wav_files_dir = self.dataset_dir.joinpath('wav')
@@ -125,7 +126,8 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             ref_midi_pitch, ref_midi_velocity = self.midi_notes[0]
 
         preset_UID = self.valid_preset_UIDs[preset_index]
-        waveform, spectrogram, synth_param, sample_info, label = self.get_data_from_file(preset_UID, ref_midi_pitch, ref_midi_velocity)
+        waveform, spectrogram = self.get_data_from_file(preset_UID, ref_midi_pitch, ref_midi_velocity)
+        synth_param = self.preset_params[preset_index]
         
         if self._multichannel_stacked_spectrograms:
             spectrograms = []
@@ -136,11 +138,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             
             spectrogram = np.stack(spectrograms)
         
-        return waveform, \
-            torch.FloatTensor(spectrogram), \
-            torch.Tensor(synth_param), \
-            sample_info, \
-            torch.Tensor(label)
+        return waveform, spectrogram, synth_param, preset_UID
 
     @property
     @abstractmethod
@@ -354,11 +352,18 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             return spectrogram * self.spec_stats['std'] + self.spec_stats['mean']
 
     # TODO un-mel method
-    def compute_and_store_spectrograms_stats(self):
+    def compute_and_store_spectrograms_stats(self, write_sr):
         """ Compute min,max,mean,std on all presets previously rendered as wav files.
         Per-preset results are stored into a .csv file
         and dataset-wide averaged results are stored into a .json file
         This functions must be re-run when spectrogram parameters are changed. """
+        self.spectrogram = utils.audio.MelSpectrogram(
+            self.n_fft,
+            self.fft_hop,
+            self.spectrogram_min_dB,
+            self.n_mel_bins,
+            write_sr
+        )
         t_start = datetime.now()
         os.makedirs(self.spec_files_dir, exist_ok=True)
         # MKL and/or PyTorch do not use hyper-threading, and it gives better results... don't use multi-proc here

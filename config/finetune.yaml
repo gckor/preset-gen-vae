@@ -4,6 +4,7 @@ allow_erase_run: False
 
 train:
   dataset: surge
+  start_epoch: 0
   n_epochs: 200
   save_period: 10
   eval_period: 5

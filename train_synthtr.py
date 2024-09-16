@@ -17,14 +17,14 @@ import torch.nn as nn
 import torch.optim
 from pyvirtualdisplay import Display
 
-import logs.logger
+from logs.logger import RunLogger, get_model_checkpoint
 import logs.metrics
 from logs.metrics import SimpleMetric, EpochMetric
 import data.dataset
 import data.build
 import utils.figures
 import utils.exception
-from utils.audio import AudioEvaluator
+from utils.audio import AudioRenderer, Spectrogram_Processor
 from utils.scheduler import get_scheduler, linear_scheduler
 from utils.distrib import get_parallel_devices
 from config import load_config
@@ -43,7 +43,7 @@ def train_config():
     dataset = data.build.get_dataset('dexed', config)
     dataloader = data.build.get_split_dataloaders(config, dataset)
     root_path = Path(config.logs_root_dir)
-    logger = logs.logger.RunLogger(root_path, config)
+    logger = RunLogger(root_path, config)
 
     # Synth parameter index information for alignment
     preset_idx_helper = dataset.preset_indexes_helper
@@ -79,8 +79,18 @@ def train_config():
 
     # Policy gradient loss
     if config.train.pg_loss:
-        preset_processor = PresetProcessor(dataset, preset_idx_helper)
-        audio_evaluator = AudioEvaluator(dataset, config.train.audio_eval_n_workers, device)
+        preset_processor = PresetProcessor(dataset, preset_idx_helper, device)
+        audio_renderer = AudioRenderer(
+            dataset,
+            config.model.write_sr,
+            config.train.audio_eval_n_workers,
+            device,
+        )
+        spec_processor = Spectrogram_Processor(
+            config.train.pg_nfft,
+            config.train.pg_hop,
+            config.model.write_sr,
+        ).to(device)
 
     # Monitoring losses always remain the same
     controls_num_eval_criterion = QuantizedNumericalParamsLoss(preset_idx_helper, numerical_loss=nn.MSELoss(reduction='mean'))
@@ -96,14 +106,12 @@ def train_config():
     scalars_train['Controls/Accuracy/Train'] = EpochMetric()
     scalars_valid['Controls/Accuracy/Valid'] = EpochMetric()
 
-    if config.train.pg_loss:
-        scalars_train['Specs/LogProb/Train'] = EpochMetric()
-        scalars_valid['Specs/LogProb/Valid'] = EpochMetric()
-        scalars_train['Specs/SpecMAE/Train'] = EpochMetric()
-        scalars_valid['Specs/SpecMAE/Valid'] = EpochMetric()
-        scalars_train['Specs/PGLoss/Train'] = EpochMetric()
-        scalars_valid['Specs/PGLoss/Valid'] = EpochMetric()
-        scalars_train['Specs/RewardSampleNum'] = EpochMetric()
+    scalars_train['Specs/LogProb/Train'] = EpochMetric()
+    scalars_valid['Specs/LogProb/Valid'] = EpochMetric()
+    scalars_train['Specs/SpecMAE/Train'] = EpochMetric()
+    scalars_valid['Specs/SpecMAE/Valid'] = EpochMetric()
+    scalars_train['Specs/PGLoss/Train'] = EpochMetric()
+    scalars_valid['Specs/PGLoss/Valid'] = EpochMetric()
 
     scalars_train['Sched/LR'] = SimpleMetric(config.train.initial_learning_rate)
     scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
@@ -122,6 +130,12 @@ def train_config():
         betas=config.train.adam_betas
     )
     scheduler = get_scheduler(config.train.scheduler_name, optimizer, **config.train.scheduler_kwargs)
+
+    if config.train.start_epoch > 0:
+        checkpoint = get_model_checkpoint(root_path, config, config.train.start_epoch, device)
+        model.load_state_dict(checkpoint['ae_model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     disp = Display()
     disp.start()
@@ -144,22 +158,26 @@ def train_config():
         
         for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
             sample = next(dataloader_iter)
-            x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+            x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
             optimizer.zero_grad()
             v_out = model_parallel(x_in)
 
-            if config.train.pg_loss:
+            # Policy Gradient loss
+            if config.train.pg_loss and epoch >= config.train.pg_loss_coef.s_epoch:
                 full_preset_out, mean_log_probs = preset_processor(v_out)
-                spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                inferred_wavs = audio_renderer.multi_process_render(full_preset_out)
+                spec_maes = spec_processor.calculate_mae(x_wav, inferred_wavs)
                 rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
                 pg_loss = -(rewards * mean_log_probs).mean()
                 scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
                 scalars_train['Specs/SpecMAE/Train'].append(spec_maes.mean().item())
                 scalars_train['Specs/PGLoss/Train'].append(pg_loss.item())
-                scalars_train['Specs/RewardSampleNum'].append((spec_maes < config.train.pg_logp_threshold).sum().item())
             else:
                 pg_loss = torch.zeros(1).to(device)
                 alpha = 0
+                scalars_train['Specs/LogProb/Train'].append(0.0)
+                scalars_train['Specs/SpecMAE/Train'].append(0.0)
+                scalars_train['Specs/PGLoss/Train'].append(0.0)
 
             # Monitoring losses
             with torch.no_grad():
@@ -168,7 +186,7 @@ def train_config():
             
             cont_loss = controls_criterion(v_out, v_in)
 
-            # Log backpropagation losses
+            # Parameter loss
             scalars_train['Controls/BackpropLoss/Train'].append(cont_loss)
 
             # Update parameters
@@ -185,19 +203,24 @@ def train_config():
                 s.on_new_epoch()
 
             with torch.no_grad():
-                model_parallel.eval()  # BN stops running estimates
+                model_parallel.eval()
                 for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
-                    x_wav, x_in, v_in, sample_info = sample[0].numpy(), sample[1].to(device), sample[2].to(device), sample[3].numpy()
+                    x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                     v_out = model_parallel(x_in)
 
-                    if config.train.pg_loss:
+                    if config.train.pg_loss and epoch >= config.train.pg_loss_coef.s_epoch:
                         full_preset_out, mean_log_probs = preset_processor(v_out)
-                        spec_maes = audio_evaluator.multi_process_measure(x_wav, full_preset_out, sample_info)
+                        inferred_wavs = audio_renderer.multi_process_render(full_preset_out)
+                        spec_maes = spec_processor.calculate_mae(x_wav, inferred_wavs)
                         rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
                         pg_loss = -(rewards * mean_log_probs).mean()
                         scalars_valid['Specs/LogProb/Valid'].append(mean_log_probs.mean().item())
                         scalars_valid['Specs/SpecMAE/Valid'].append(spec_maes.mean().item())
                         scalars_valid['Specs/PGLoss/Valid'].append(pg_loss.item())
+                    else:
+                        scalars_valid['Specs/LogProb/Valid'].append(0.0)
+                        scalars_valid['Specs/SpecMAE/Valid'].append(0.0)
+                        scalars_valid['Specs/PGLoss/Valid'].append(0.0)
 
                     # Loss
                     cont_loss = controls_criterion(v_out, v_in)

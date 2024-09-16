@@ -46,7 +46,7 @@ def get_split_dataloaders(config, full_dataset):
         # mostly sfx: these hard to learn (or generate) item would have a much higher
         # equivalent learning rate because all losses are minibatch-size normalized.
         # No issue for eval though
-        drop_last = (k.lower() == 'train')
+        drop_last = (k.lower() != 'test')
 
         # Dataloaders based on previously built samplers
         dataloaders[k] = torch.utils.data.DataLoader(
@@ -54,6 +54,8 @@ def get_split_dataloaders(config, full_dataset):
             batch_size=config.train.minibatch_size,
             sampler=sampler,
             drop_last=drop_last,
+            num_workers=1,
+            pin_memory=True,
         )
         sub_datasets_lengths[k] = len(sampler.indices)
         if config.verbosity >= 1:

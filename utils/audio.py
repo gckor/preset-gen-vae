@@ -5,6 +5,7 @@ Audio utils (spectrograms, G&L phase reconstruction, ...)
 import os
 import sys
 import warnings
+from scipy.signal import resample
 from contextlib import contextmanager
 from typing import Iterable, Sequence, Optional, List
 import pathlib
@@ -16,10 +17,12 @@ import multiprocessing
 
 import torch
 import torch.fft
+import torch.nn as nn
 from torch.utils.data import Dataset
 import librosa
 import librosa.display
 import soundfile as sf
+from nnAudio.features import STFT
 
 
 class Spectrogram:
@@ -275,65 +278,126 @@ class SimpleSampleLabeler:
         print("is_harmonic={}   is_percussive={}".format(self.is_harmonic, self.is_percussive))
 
 
-class AudioEvaluator:
-    def __init__(self, dataset: Dataset, num_workers: int, device: str):
+class AudioRenderer():
+    def __init__(
+            self,
+            dataset: Dataset,
+            write_sr: int,
+            num_workers: int,
+            device: str,
+            midi_pitch: int = 60,
+            midi_velocity: int = 85,
+        ):
         self.dataset = dataset
+        self.write_sr = write_sr
         self.num_workers = num_workers
         self.device = device
+        self.midi_pitch = midi_pitch
+        self.midi_velocity = midi_velocity
 
-    def multi_process_measure(
-            self,
-            x_wav: np.ndarray,
-            full_preset_out: torch.Tensor,
-            sample_info: np.ndarray,
-        ):
-        x_wav_split = np.array_split(x_wav, self.num_workers, axis=0)
-        midi_pitch_split = np.array_split(sample_info[:, 1], self.num_workers, axis=0)
-        midi_velocity_split = np.array_split(sample_info[:, 2], self.num_workers, axis=0)
+    def multi_process_render(self, full_preset_out: torch.Tensor):
         full_preset_out_split = np.array_split(full_preset_out, self.num_workers, axis=0)
         workers_data = []
 
         for i in range(self.num_workers):
-            workers_data.append((
-                x_wav_split[i],
-                full_preset_out_split[i],
-                midi_pitch_split[i],
-                midi_velocity_split[i],
-            ))
+            workers_data.append((full_preset_out_split[i], ))
 
         with multiprocessing.Pool(self.num_workers) as p:
-            spec_maes_split = p.map(self._measure_spec_mae_worker, workers_data)
+            wavs_split = p.map(self._render_worker, workers_data)
 
-        spec_maes = np.hstack(spec_maes_split)
-        spec_maes = torch.FloatTensor(spec_maes).unsqueeze(1).to(self.device)
-        return spec_maes
+        inferred_wav = np.vstack(wavs_split)
+        return torch.FloatTensor(inferred_wav).to(self.device)
 
-    def _measure_spec_mae_worker(self, worker_args: List):
+    def _render_worker(self, worker_args: List):
         pid = os.getpid()
         cpus = list(range(psutil.cpu_count()))
         os.sched_setaffinity(pid, cpus)
-        return self._measure_spec_mae(*worker_args)
+        return self._render_audio(*worker_args)
 
-    def _measure_spec_mae(
-        self,
-        x_wav: np.ndarray,
-        full_preset_out: torch.Tensor,
-        midi_pitch: torch.Tensor,
-        midi_velocity: torch.Tensor,
-    ):
-        spec_maes = []
+    def _render_audio(self, full_preset_out: torch.Tensor):
+        wavs = []
 
         for i in range(full_preset_out.shape[0]):
             with suppress_output():
-                x_wav_inferred, _ = self.dataset._render_audio(
+                x_wav_inferred, Fs = self.dataset._render_audio(
                     full_preset_out[i],
-                    int(midi_pitch[i]),
-                    int(midi_velocity[i]),
+                    self.midi_pitch,
+                    self.midi_velocity,
                 )
-            similarity_eval = SimilarityEvaluator((x_wav[i], x_wav_inferred))
-            spec_maes.append(similarity_eval.get_mae_log_stft(return_spectrograms=False))
+            num_samples = int(len(x_wav_inferred) * self.write_sr / Fs)
+            resampled_wav = resample(x_wav_inferred, num_samples)
+            wavs.append(resampled_wav)
 
-        return np.array(spec_maes)
+        return np.array(wavs)
+    
+
+class Spectrogram_Processor(nn.Module):
+    def __init__(
+        self,
+        n_fft: List[int] = [1024],
+        hop_length: List[int] = [256],
+        sr: int = 22050,
+        alpha: float = 1.0,
+        eps: float = 1e-4,
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.eps = eps
+        self.stfts = nn.ModuleList()
+
+        for i in range(len(n_fft)):
+            stft = STFT(
+                n_fft=n_fft[i],
+                hop_length=hop_length[i],
+                sr=sr,
+                output_format='Magnitude'
+            )
+            self.stfts.append(stft)
+    
+    def calculate_mss(self, wav_1, wav_2):
+        bs = wav_1.shape[0]
+        mss = torch.zeros((bs, ), device=wav_1.device)
+        wavs = torch.cat((wav_1, wav_2), dim=0)
+
+        for stft in self.stfts:
+            specs = stft(wavs)
+            specs = torch.clamp(specs, min=self.eps)
+            log_specs = torch.log10(specs)
+            mae = torch.abs(specs[:bs] - specs[bs:]).mean(dim=[1, 2])
+            log_mae = torch.abs(log_specs[:bs] - log_specs[bs:]).mean(dim=[1, 2])
+            mss_i = mae + self.alpha * log_mae
+            mss += mss_i
+
+        return mss.unsqueeze(1)
+    
+    def calculate_mae(self, wav_1, wav_2):
+        bs = wav_1.shape[0]
+        wavs = torch.cat((wav_1, wav_2), dim=0)
+
+        for stft in self.stfts:
+            specs = stft(wavs)
+            specs = torch.clamp(specs, min=self.eps)
+            specs = torch.log10(specs)
+            mae = torch.abs(specs[:bs] - specs[bs:]).mean(dim=[1, 2])
+
+        return mae.unsqueeze(1)
+    
+    def analyze_all_metrics(self, wav_1, wav_2):
+        bs = wav_1.shape[0]
+        metrics = dict()
+        wavs = torch.cat((wav_1, wav_2), dim=0)
+
+        for stft in self.stfts:
+            specs = stft(wavs)
+            specs = torch.clamp(specs, min=self.eps)
+            log_specs = torch.log10(specs)
+            mae = torch.abs(specs[:bs] - specs[bs:]).mean(dim=[1, 2])
+            log_mae = torch.abs(log_specs[:bs] - log_specs[bs:]).mean(dim=[1, 2])
+            metrics[f'mae_{stft.n_fft}'] = mae.item()
+            metrics[f'log_mae_{stft.n_fft}'] = log_mae.item()
+
+        return metrics
+
     
 
 def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):

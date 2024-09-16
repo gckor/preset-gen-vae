@@ -8,23 +8,23 @@ dataset:
   spectrogram_min_dB: -120.0
   algos: null
   operators: [1, 2, 3, 4, 5, 6]
-  vst_params_learned_as_categorical: all<=34 # all<=32, all<=34, ...
+  vst_params_learned_as_categorical: all<=32 # all<=32, all<=34, ...
   restrict_to_labels: null
   dataset_dir: /data1/Music/synth_sound_match
-  dataset_name: num_as_25_cls
-  num_param_bins: 25 # -1 if no discretization of numerical params
+  dataset_name: numcatpp32 # num_as_25_cls
+  num_param_bins: -1 # -1 if no discretization of numerical params
 
 train:
   current_k_fold: 0
   k_folds: 5
   test_holdout_proportion: 0.2
-  minibatch_size: 32
+  minibatch_size: 610
   optimizer: AdamW
   start_epoch: 0
-  n_epochs: 400
-  eval_period: 5
-  save_period: 20
-  plot_period: 20
+  n_epochs: 200
+  eval_period: 10
+  save_period: 10
+  plot_period: 10
   weight_decay: 0.0001
   fc_dropout: 0.3
   reg_fc_dropout: 0.4
@@ -49,15 +49,17 @@ train:
   contrastive_coef: 0.1
   early_stop_lr_threshold: 0
   logged_samples_count: 4
-  pg_loss: True
+  pg_loss: False
   audio_eval_n_workers: 16
   pg_loss_coef:
     s_value: 0.0
     e_value: 1.0
     s_epoch: 50
-    e_epoch: 200
-  pg_logp_threshold: 0.6
-  params_label_smoothing: True
+    e_epoch: 150
+  pg_nfft: [1024] # [2048, 1024, 512, 256, 128, 64]
+  pg_hop: [256] # [512, 256, 128, 64, 32, 16]
+  pg_logp_threshold: 0.8
+  params_label_smoothing: False
   
 
 model:
@@ -68,18 +70,19 @@ model:
   stack_specs_deepest_features_mix: False
   concat_midi_to_z: False
   sampling_rate: 44100
-  waveform_size: 88576
-  spectrogram_size: [257, 347]
+  write_sr: 22050
+  waveform_size: 88200 # 88576
+  spectrogram_size: [257, 345] # [257, 347]
   input_tensor_size: null
   dim_z: 610
   params_reg_softmax: False
   params_regression_architecture: mlp_4l1024 # mlp_4l1024 / flow_realnvp_6l300
-  latent_flow_arch: null # realnvp_6l300, null
+  latent_flow_arch: realnvp_6l300 # realnvp_6l300, null
   forward_controls_loss: True
-  stochastic_latent: False
+  stochastic_latent: True
   latent_quantization: null
-  encoder_architecture: SynthTR # SpectrogramCNN / MaskedAutoencoderViT / SEANetEncoder / SynthTR
-  decoder_architecture: null # speccnn8l1_bn / null
+  encoder_architecture: SpectrogramCNN # SpectrogramCNN / MaskedAutoencoderViT / SEANetEncoder / SynthTR
+  decoder_architecture: speccnn811_bn # speccnn8l1_bn / null
   contrastive: False
   pretrained_dir: /exp_logs/preset-gen-vae/audiomae/default/checkpoint-300.pth
   encoder_kwargs: null

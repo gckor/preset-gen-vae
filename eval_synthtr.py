@@ -13,6 +13,7 @@ from typing import Sequence
 import multiprocessing
 from omegaconf import OmegaConf
 from matplotlib import pyplot as plt
+from scipy.signal import resample
 
 import numpy as np
 import torch
@@ -146,10 +147,10 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     assert eval_config.minibatch_size == 1  # Required for per-preset metrics
 
     for i, sample in tqdm(enumerate(dataloader[eval_config.dataset[1]]), total=len(dataloader[eval_config.dataset[1]])):
-        x_in, v_in, sample_info = sample[1].to(device), sample[2].to(device), sample[3].to(device)
+        x_in, v_in, preset_UID = sample[1].to(device), sample[2].to(device), sample[3]
         v_out = eval_model(x_in)
         eval_metrics.append(dict())
-        eval_metrics[-1]['preset_UID'] = sample_info[0, 0].item()
+        eval_metrics[-1]['preset_UID'] = preset_UID.item()
 
         if eval_config.dataset[0] == 'dexed':
             # Metrics
@@ -168,7 +169,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
             in_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_in, dataset=dexed_dataset)
             synth_params_GT.append(in_presets_instance.get_full()[0, :].cpu().numpy())
 
-        preset_UIDs.append(sample_info[0, 0].item())
+        preset_UIDs.append(preset_UID.item())
         out_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_out, dataset=dexed_dataset)
         synth_params_inferred.append(out_presets_instance.get_full()[0, :].cpu().numpy())
         
@@ -261,7 +262,9 @@ def _measure_audio_errors(dexed_dataset, eval_dataset, midi_notes, audio_path, s
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
             x_wav_original = eval_dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
             with utils.audio.suppress_output():
-                x_wav_inferred, _ = dexed_dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+                x_wav_inferred, Fs = dexed_dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
+                num_samples = int(len(x_wav_inferred) * sampling_rate / Fs)
+                x_wav_inferred = resample(x_wav_inferred, num_samples)
 
             # Save .wav files
             filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')

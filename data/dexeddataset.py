@@ -294,10 +294,14 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         return ops_suffix
 
     def _load_preset_params(self):
+<<<<<<< HEAD
         try:
             self.preset_params = torch.load(self.dataset_dir.joinpath(self.dataset_name + '.pt'))
         except IOError:
             print(f'[PresetDataset] Cannot open {self.dataset_name}.pt file.')
+=======
+        self.preset_params = torch.load(self.dataset_dir.joinpath(self.dataset_name + '.pt'))
+>>>>>>> dcb75544
     
     def generate_preset_params(self):
         total_num = len(self.valid_preset_UIDs)

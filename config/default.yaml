@@ -20,13 +20,8 @@ train:
   test_holdout_proportion: 0.2
   minibatch_size: 610
   optimizer: AdamW
-<<<<<<< HEAD
   start_epoch: 0
   n_epochs: 200
-=======
-  start_epoch: 50
-  n_epochs: 400
->>>>>>> dcb75544
   eval_period: 10
   save_period: 10
   plot_period: 10
@@ -64,11 +59,7 @@ train:
   pg_nfft: [1024] # [2048, 1024, 512, 256, 128, 64]
   pg_hop: [256] # [512, 256, 128, 64, 32, 16]
   pg_logp_threshold: 0.8
-<<<<<<< HEAD
   params_label_smoothing: False
-=======
-  params_label_smoothing: True
->>>>>>> dcb75544
   
 
 model:

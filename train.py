@@ -138,8 +138,6 @@ def train_config():
         scalars['LatLoss/Train'], scalars['LatLoss/Valid'] = EpochMetric(), EpochMetric()
         scalars['VAELoss/Train'], scalars['VAELoss/Valid'] = SimpleMetric(), SimpleMetric()
         metrics['LatLoss/Valid_'] = logs.metrics.BufferedMetric()
-    
-    logger.tensorboard.init_hparams_and_metrics(metrics)  # hparams added knowing config.*
 
     # Optimizer and Scheduler
     extended_ae_model.train()
@@ -355,12 +353,12 @@ def train_config():
                 scalars['Controls/BackpropLoss/Valid'].append(cont_loss)
 
                 # Validation plots
-                if should_plot and config.model.decoder_architecture is not None and config.model.input_type == 'spectrogram':
-                    v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
-                    if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
-                        fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info, dataset,
-                                                                       config)
-                    logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
+                # if should_plot and config.model.decoder_architecture is not None and config.model.input_type == 'spectrogram':
+                #     v_error = torch.cat([v_error, v_out - v_in])  # Full-batch error storage
+                #     if i == 0:  # tensorboard samples for minibatch 'eval' [0] only
+                #         fig, _ = utils.figures.plot_train_spectrograms(x_in, x_out, sample_info, dataset,
+                #                                                        config)
+                #     logger.tensorboard.add_figure('Spectrogram', fig, epoch, close=True)
 
         if config.model.stochastic_latent:
             scalars['VAELoss/Valid'] = SimpleMetric(scalars['ReconsLoss/Backprop/Valid'].get()
@@ -375,11 +373,11 @@ def train_config():
         for k, s in scalars.items():  # All available scalars are written to tensorboard
             logger.tensorboard.add_scalar(k, s.get(), epoch)
 
-        if should_plot or early_stop:
-            if v_error.size(0) > 0:  # u_error might be empty on early_stop
-                fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(),
-                                                               dataset.preset_indexes_helper)
-                logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
+        # if should_plot or early_stop:
+        #     if v_error.size(0) > 0:  # u_error might be empty on early_stop
+        #         fig, _ = utils.figures.plot_synth_preset_error(v_error.detach().cpu(),
+        #                                                        dataset.preset_indexes_helper)
+        #         logger.tensorboard.add_figure('SynthControlsError', fig, epoch)
         
         metrics['epochs'] = epoch + 1
         metrics['ReconsLoss/MSE/Valid_'].append(scalars['ReconsLoss/MSE/Valid'].get())
@@ -388,7 +386,7 @@ def train_config():
 
         if config.model.stochastic_latent:
             metrics['LatLoss/Valid_'].append(scalars['LatLoss/Valid'].get())
-        logger.tensorboard.update_metrics(metrics)
+        # logger.tensorboard.update_metrics(metrics)
 
         # Model+optimizer(+scheduler) save - ready for next epoch
         if (epoch > 0 and epoch % config.train.save_period == 0)\

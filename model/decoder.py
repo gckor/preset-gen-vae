@@ -54,7 +54,7 @@ class SpectrogramDecoder(nn.Module):
                                      nn.Linear(1024, 1024), nn.ReLU(),
                                      nn.Linear(1024, int(np.prod(self.cnn_input_shape))))  # TODO add last ReLU?
         elif 'speccnn8l1' in self.architecture:
-            if self.spectrogram_input_size == (257, 347):
+            if self.spectrogram_input_size == (257, 345):
                 if self.architecture == 'speccnn8l1_3':
                     self.cnn_input_shape = (self.mixer_1x1conv_ch, 3, 3)
                 else:
@@ -210,11 +210,11 @@ class SpectrogramCNN(nn.Module):
                                                       activation=act(act_p), name_prefix='dec3'),
                                         layer.TConv2D(128, 64, [4, 4], [2, 2], 2, output_padding=[1, 1],
                                                       activation=act(act_p), name_prefix='dec4'),
-                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 1],
+                                        layer.TConv2D(64, 32, [4, 4], [2, 2], 2, output_padding=[1, 0],
                                                       activation=act(act_p), name_prefix='dec5'),
-                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                        layer.TConv2D(32, 16, [4, 4], [2, 2], 2, output_padding=[1, 1],
                                                       activation=act(act_p), name_prefix='dec6'),
-                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 0],
+                                        layer.TConv2D(16, 8, [4, 4], [2, 2], 2, output_padding=[1, 1],
                                                       activation=act(act_p), name_prefix='dec7'),
                                         nn.ConvTranspose2d(8, 1, [5, 5], [2, 2], 2),
                                         output_activation

@@ -21,9 +21,9 @@ train:
   minibatch_size: 610
   optimizer: AdamW
   start_epoch: 0
-  n_epochs: 200
+  n_epochs: 150
   eval_period: 10
-  save_period: 10
+  save_period: 50
   plot_period: 10
   weight_decay: 0.0001
   fc_dropout: 0.3
@@ -63,7 +63,7 @@ train:
   
 
 model:
-  name: gradual-newdata-from50ep
+  name: pgvae_base-newdata
   run_name: kfold0-s1
   input_type: spectrogram
   stack_spectrograms: True
@@ -76,13 +76,13 @@ model:
   input_tensor_size: null
   dim_z: 610
   params_reg_softmax: False
-  params_regression_architecture: mlp_4l1024 # mlp_4l1024 / flow_realnvp_6l300
+  params_regression_architecture: flow_realnvp_6l300 # mlp_4l1024 / flow_realnvp_6l300
   latent_flow_arch: realnvp_6l300 # realnvp_6l300, null
   forward_controls_loss: True
   stochastic_latent: True
   latent_quantization: null
   encoder_architecture: SpectrogramCNN # SpectrogramCNN / MaskedAutoencoderViT / SEANetEncoder / SynthTR
-  decoder_architecture: speccnn811_bn # speccnn8l1_bn / null
+  decoder_architecture: speccnn8l1_bn # speccnn8l1_bn / null
   contrastive: False
   pretrained_dir: /exp_logs/preset-gen-vae/audiomae/default/checkpoint-300.pth
   encoder_kwargs: null

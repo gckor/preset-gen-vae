@@ -1,7 +1,7 @@
 model:
   encoder_kwargs:
     backbone: CNNBackbone
-    d_model: 256
+    d_model: 512
     spectrogram_channels: 1
     n_queries: 144
     transformer_kwargs:

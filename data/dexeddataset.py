@@ -350,11 +350,14 @@ class DexedDataset(abstractbasedataset.PresetDataset):
         try:
             spectrogram = torch.load(file_path)
 
-            if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
-                spectrogram = -1.0 + (spectrogram - self.spec_stats['min'])\
-                            / ((self.spec_stats['max'] - self.spec_stats['min']) / 2.0)
-            elif self.spectrogram_normalization == 'mean_std':
-                spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
+            # if self.spectrogram_normalization == 'min_max':  # result in [-1, 1]
+            #     spectrogram = -1.0 + 2.0 * (spectrogram - self.spec_stats['min'])\
+            #                 / ((self.stats['max'] - self.spec_stats['min']))
+            #     # spectrogram = -1.0 + 2.0 * (spectrogram - self.spec_stats['min'])\
+            #     #             / ((max_aug - self.spec_stats['min']))
+            #     # spectrogram = -1.0 + max_aug * (spectrogram - spectrogram.min()) / (spectrogram.max() - spectrogram.min() + 1e-5)
+            # elif self.spectrogram_normalization == 'mean_std':
+            #     spectrogram = (spectrogram - self.spec_stats['mean']) / self.spec_stats['std']
 
             return spectrogram.unsqueeze(0)
         except RuntimeError:
@@ -454,8 +457,8 @@ if __name__ == "__main__":
     write_sr = 22050
     regenerate_wav = False  # multi-notes: a few minutes on a powerful CPU (20+ cores) - else: much longer
     # WARNING: when computing stats, please make sure that *all* midi notes are available
-    regenerate_spectrograms_stats = False  # approx 3 min - 30e3 preset, single MIDI note (16mins for 16 MIDI notes)
-    regenerate_preset_params = True
+    regenerate_spectrograms_stats = True  # approx 3 min - 30e3 preset, single MIDI note (16mins for 16 MIDI notes)
+    regenerate_preset_params = False
 
     # xvfb display activation via pyvirtualdisplay wrapper
     disp = Display().start()
@@ -465,6 +468,7 @@ if __name__ == "__main__":
     dexed_dataset = DexedDataset(
         spectrogram_normalization=None,  # No normalization: we want to compute stats
         check_constrains_consistency=False,
+        normalize_audio=True,
         **config.dataset,
     )
 

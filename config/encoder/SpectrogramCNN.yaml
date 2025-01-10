@@ -2,7 +2,7 @@ model:
   encoder_kwargs:
     dim_z: 610
     spectrogram_channels: 1
-    spectrogram_size: [257, 347]
+    spectrogram_size: [257, 345] # [257, 347]
     fc_dropout: 0.3
     output_bn: True
     deepest_features_mix: False

@@ -12,6 +12,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 import mkl
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim
@@ -24,7 +25,7 @@ import data.dataset
 import data.build
 import utils.figures
 import utils.exception
-from utils.audio import AudioRenderer, Spectrogram_Processor
+from utils.audio import AudioRenderer, Spectrogram_Processor, spec_aug
 from utils.scheduler import get_scheduler, linear_scheduler
 from utils.distrib import get_parallel_devices
 from config import load_config
@@ -159,15 +160,25 @@ def train_config():
         for i in tqdm(range(len(dataloader['train'])), desc='training batch', position=1, leave=False):
             sample = next(dataloader_iter)
             x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
+
+            if config.train.spec_aug:
+                if np.random.rand() < 0.8:
+                    x_in = spec_aug(x_in, F=3, T=3, n_f_mask=10, n_t_mask=10)
+
+            if config.train.spec_noise:
+                x_in = torch.clip(x_in + torch.randn_like(x_in) * 0.05, -1, 1)
+    
             optimizer.zero_grad()
             v_out = model_parallel(x_in)
 
             # Policy Gradient loss
             if config.train.pg_loss and epoch >= config.train.pg_loss_coef.s_epoch:
-                full_preset_out, mean_log_probs = preset_processor(v_out)
+                full_preset_out, actions = preset_processor(v_out)
                 inferred_wavs = audio_renderer.multi_process_render(full_preset_out)
-                spec_maes = spec_processor.calculate_mae(x_wav, inferred_wavs)
-                rewards = calculate_rewards(spec_maes, config.train.pg_logp_threshold)
+                x_wav = x_wav / torch.abs(x_wav + 1e-5).max(dim=1)[0].unsqueeze(1)
+                inferred_wavs = inferred_wavs / torch.abs(inferred_wavs + 1e-5).max(dim=1)[0].unsqueeze(1)
+                sc, log_mae, mfcc_mae = spec_processor.calculate_metrics(x_wav, inferred_wavs)
+                rewards = calculate_rewards(sc, log_mae, mfcc_mae, config.train.pg_logp_threshold)
                 pg_loss = -(rewards * mean_log_probs).mean()
                 scalars_train['Specs/LogProb/Train'].append(mean_log_probs.mean().item())
                 scalars_train['Specs/SpecMAE/Train'].append(spec_maes.mean().item())

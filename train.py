@@ -62,7 +62,7 @@ def train_config():
         extended_ae_model.load_state_dict(start_checkpoint['ae_model_state_dict'])  # GPU tensor params
 
     extended_ae_model.eval()
-    logger.init_with_model(extended_ae_model, config.model.input_tensor_size)
+    # logger.init_with_model(extended_ae_model, config.model.input_tensor_size)
     # logger.write_model_summary(
     #     model=extended_ae_model.reg_model,
     #     input_tensor_size=(config.train.minibatch_size, config.model.dim_z),

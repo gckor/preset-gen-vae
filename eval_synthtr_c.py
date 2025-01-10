@@ -29,6 +29,8 @@ import model.build
 from model.encoder import SynthTR
 import model.loss
 import utils.audio
+from model.loss import PresetProcessor
+from utils.audio import AudioRenderer, Spectrogram_Processor
 import utils.config
 import synth.dexed
 
@@ -76,7 +78,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     # Eval file to be created
     # eval_path = path_to_model_dir.joinpath(eval_config.dataset[0], f'{eval_config.ckp_epoch:03d}epoch')
     eval_path = path_to_model_dir.joinpath(eval_config.dataset[0], f'{eval_config.ckp_epoch:03d}epoch')
-    os.makedirs(eval_path, exist_ok=True)
+    audio_path = eval_path.joinpath('audio')
+    os.makedirs(audio_path, exist_ok=True)
     eval_pickle_file_path = get_eval_pickle_file_path(eval_path, eval_config.dataset[1])
     
     # Return now if eval already exists, and should not be overridden
@@ -116,12 +119,6 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     eval_model.load_state_dict(checkpoint['ae_model_state_dict'])
     eval_model = eval_model.to(device).eval()
     torch.set_grad_enabled(False)
-        
-    eval_midi_notes = ((60, 85), )
-
-    if eval_config.verbosity >= 1:
-        print("Evaluation will be performed on {} MIDI note(s): {}".format(len(eval_midi_notes), eval_midi_notes))
-
 
     # 0) Structures and Criteria for evaluation metrics
     # Empty dicts (one dict per preset), eventually converted to a pandas dataframe
@@ -157,14 +154,46 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         limited_vst_params_indexes=dynamic_vst_controls_indexes
     )
 
+    preset_processor = PresetProcessor(dexed_dataset, preset_idx_helper, device)
+    audio_renderer = AudioRenderer(
+        dexed_dataset,
+        config.model.write_sr,
+        1,
+        device
+    )
+    spec_processor = Spectrogram_Processor(
+        config.train.pg_nfft,
+        config.train.pg_hop,
+        config.model.write_sr,
+    ).to(device)
+
     # 1) Infer all preset parameters
     assert eval_config.minibatch_size == 1  # Required for per-preset metrics
 
+    disp = Display()
+    disp.start()
+
     for i, sample in tqdm(enumerate(dataloader), total=len(dataloader)):
-        x_in, v_in, preset_UID = sample[1].to(device), sample[2].to(device), sample[3]
-        v_out = eval_model(x_in)
+        x_wav, x_in, v_in, preset_UID = sample[0].to(device), sample[1].to(device), sample[2].to(device), sample[3].item()
+
+        with torch.no_grad():
+            v_out = eval_model(x_in)
+            full_preset_out, _ = preset_processor(v_out, deterministic=True)
+            inferred_wav = audio_renderer.single_process_render(full_preset_out)
+            inferred_wav = inferred_wav / torch.abs(inferred_wav + 1e-5).max(dim=1)[0]
+            sc, log_mae, mfcc13_mae, mfcc40_mae = spec_processor.calculate_metrics(x_wav, inferred_wav)
+
+        filename_gt = audio_path.joinpath(f'{preset_UID}_gt.wav')
+        filename_inferred = audio_path.joinpath(f'{preset_UID}.wav')
+        soundfile.write(filename_gt, x_wav.cpu().numpy()[0], eval_config.sampling_rate)
+        soundfile.write(filename_inferred, inferred_wav.cpu().numpy()[0], eval_config.sampling_rate)
+
         eval_metrics.append(dict())
-        eval_metrics[-1]['preset_UID'] = preset_UID.item()
+        eval_metrics[-1]['preset_UID'] = preset_UID
+        eval_metrics[-1]['spec_sc'] = sc.item()
+        eval_metrics[-1]['spec_mae'] = log_mae.item()
+        eval_metrics[-1]['mfcc13_mae'] = mfcc13_mae.item()
+        eval_metrics[-1]['mfcc40_mae'] = mfcc40_mae.item()
 
         if eval_config.dataset[0] == 'dexed':
             # Metrics
@@ -183,10 +212,11 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
             in_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_in, dataset=dexed_dataset)
             synth_params_GT.append(in_presets_instance.get_full()[0, :].cpu().numpy())
 
-        preset_UIDs.append(preset_UID.item())
+        preset_UIDs.append(preset_UID)
         out_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_out, dataset=dexed_dataset)
         synth_params_inferred.append(out_presets_instance.get_full()[0, :].cpu().numpy())
-        
+
+    disp.stop()        
 
     # Numpy matrix of preset values. Reconstructed spectrograms are not stored
     synth_params_inferred = np.asarray(synth_params_inferred)
@@ -198,41 +228,8 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         acc_df.to_pickle(eval_path.joinpath('cat_params_acc.pickle'))
         mae_df.to_pickle(eval_path.joinpath('num_params_mae.pickle'))
 
-
-    # 2) Evaluate audio from inferred synth parameters
-    audio_path = eval_path.joinpath('audio')
-    spec_path = eval_path.joinpath('spectrogram')
-    os.makedirs(audio_path, exist_ok=True)
-    os.makedirs(spec_path, exist_ok=True)  
-
-    num_workers = int(np.round(os.cpu_count() * eval_config.multiprocess_cores_ratio))
-    preset_UIDs_split = np.array_split(preset_UIDs, num_workers, axis=0)
-    synth_params_inferred_split = np.array_split(synth_params_inferred, num_workers, axis=0)
-    workers_data = [(dexed_dataset, eval_dataset, eval_midi_notes, audio_path, spec_path, eval_config.sampling_rate,
-                     preset_UIDs_split[i], synth_params_inferred_split[i], i)
-                    for i in range(num_workers)]
-    
-    disp = Display()
-    disp.start()
-
-    # Multi-processing is absolutely necessary
-    with multiprocessing.Pool(num_workers) as p:
-        audio_errors_split = p.map(_measure_audio_errors_worker, workers_data)
-
-    disp.stop()
-    audio_errors = dict()
-
-    for error_name in audio_errors_split[0]:
-        audio_errors[error_name] = np.hstack([audio_errors_split[i][error_name]
-                                              for i in range(len(audio_errors_split))])
-
-
     # 3) Concatenate results into a dataframe
     eval_df = pd.DataFrame(eval_metrics)
-    
-    # append audio errors
-    for error_name, err in audio_errors.items():
-        eval_df[error_name] = err
 
     # multi-note case: average results with the same preset UID (Python set prevents duplicates)
     # This also sorts the dataframe presets UIDs and will done for all evaluations (sub-optimal but small data structs)
@@ -256,61 +253,6 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     if eval_config.verbosity >= 1:
         print("Finished evaluation ({}) in {:.1f}s".format(eval_pickle_file_path,
                                                            (datetime.now() - t_start).total_seconds()))
-
-
-def _measure_audio_errors_worker(worker_args):
-    pid = os.getpid()
-    cpus = list(range(psutil.cpu_count()))
-    os.sched_setaffinity(pid, cpus)
-    return _measure_audio_errors(*worker_args)
-
-
-def _measure_audio_errors(dexed_dataset, eval_dataset, midi_notes, audio_path, spec_path,
-                          sampling_rate: int, preset_UIDs: Sequence, synth_params_inferred: np.ndarray, i):
-    # Dict of per-UID errors (if multiple notes: note-averaged values)
-    errors = {'spec_mae': list(), 'spec_sc': list(), 'mfcc13_mae': list(), 'mfcc40_mae': list()}
-
-    for idx, preset_UID in tqdm(enumerate(preset_UIDs), position=i, desc=f'Process {i}', leave=True, total=len(preset_UIDs)):
-        mae, sc, mfcc13_mae, mfcc40_mae = list(), list(), list(), list()  # Per-note errors (might be 1-element lists)   
-
-        for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
-            x_wav_original = eval_dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
-            x_wav_original = x_wav_original / np.abs(x_wav_original + 1e-5).max()
-            with utils.audio.suppress_output():
-                x_wav_inferred, Fs = dexed_dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
-                num_samples = int(len(x_wav_inferred) * sampling_rate / Fs)
-                x_wav_inferred = resample(x_wav_inferred, num_samples)
-                x_wav_inferred = x_wav_inferred / np.abs(x_wav_inferred + 1e-5).max()
-
-            # Save .wav files
-            filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
-            filename_inferred = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.wav')
-            soundfile.write(filename_gt, x_wav_original, sampling_rate, subtype='FLOAT')
-            soundfile.write(filename_inferred, x_wav_inferred, sampling_rate, subtype='FLOAT')
-            
-            # Save log spectrogram figures
-            similarity_eval = utils.audio.SimilarityEvaluator((x_wav_original, x_wav_inferred))
-            _mae, log_stft = similarity_eval.get_mae_log_stft(return_spectrograms=True)
-            fig, _ = similarity_eval.display_stft(log_stft)
-            filename_spec = spec_path.joinpath(f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.png')
-            fig.savefig(filename_spec)
-            plt.close(fig)
-            
-            mae.append(_mae)
-            sc.append(similarity_eval.get_spectral_convergence(return_spectrograms=False))
-            mfcc13_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=13))
-            mfcc40_mae.append(similarity_eval.get_mae_mfcc(return_mfccs=False, n_mfcc=40))
-
-        # Average errors over all played MIDI notes
-        errors['spec_mae'].append(np.mean(mae))
-        errors['spec_sc'].append(np.mean(sc))
-        errors['mfcc13_mae'].append(np.mean(mfcc13_mae))
-        errors['mfcc40_mae'].append(np.mean(mfcc40_mae))
-
-    for error_name in errors:
-        errors[error_name] = np.asarray(errors[error_name])
-
-    return errors
 
 
 if __name__ == "__main__":

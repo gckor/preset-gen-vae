@@ -58,8 +58,8 @@ def evaluate_all_models(eval_config: utils.config.EvalConfig):
         evaluate_model(model_dir_path, eval_config)
 
 
-def get_eval_pickle_file_path(path_to_model_dir: Path, dataset_type: str, force_multi_note=False):
-    return path_to_model_dir.joinpath('eval_{}{}.dataframe.pickle'
+def get_eval_pickle_file_path(eval_path: Path, dataset_type: str, force_multi_note=False):
+    return eval_path.joinpath('eval_{}{}.dataframe.pickle'
                                       .format(dataset_type, ('__MULTI_NOTE__' if force_multi_note else '')))
 
 
@@ -75,7 +75,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     config = OmegaConf.load(path_to_model_dir.joinpath('config.yaml'))
     
     # Eval file to be created
-    eval_pickle_file_path = get_eval_pickle_file_path(path_to_model_dir, eval_config.dataset)
+    eval_path = path_to_model_dir.joinpath(eval_config.dataset[0], f'{eval_config.ckp_epoch:03d}epoch')
+    os.makedirs(eval_path, exist_ok=True)
+    eval_pickle_file_path = get_eval_pickle_file_path(eval_path, eval_config.dataset[1])
     
     # Return now if eval already exists, and should not be overridden
     if os.path.exists(eval_pickle_file_path):
@@ -98,7 +100,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
 
     # Rebuild model from last saved checkpoint (default: if trained on GPU, would be loaded on GPU)
     device = torch.device(eval_config.device)
-    checkpoint = logs.logger.get_model_last_checkpoint(root_path, config, device=device)
+    checkpoint = logs.logger.get_model_checkpoint(root_path, config, eval_config.ckp_epoch, device)
     extended_ae_model = model.build.build_extended_ae_model(config, preset_idx_helper)
     extended_ae_model.load_state_dict(checkpoint['ae_model_state_dict'])
     extended_ae_model = extended_ae_model.to(device).eval()
@@ -188,13 +190,13 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     if eval_config.dataset[0] == 'dexed':
         acc_df = pd.DataFrame(eval_accuracies, index=preset_UIDs)
         mae_df = pd.DataFrame(eval_maes, index=preset_UIDs)
-        acc_df.to_pickle(path_to_model_dir.joinpath('cat_params_acc.pickle'))
-        mae_df.to_pickle(path_to_model_dir.joinpath('num_params_mae.pickle'))
+        acc_df.to_pickle(eval_path.joinpath('cat_params_acc.pickle'))
+        mae_df.to_pickle(eval_path.joinpath('num_params_mae.pickle'))
 
 
     # 2) Evaluate audio from inferred synth parameters
-    audio_path = path_to_model_dir.joinpath('audio')
-    spec_path = path_to_model_dir.joinpath('spectrogram')
+    audio_path = eval_path.joinpath('audio')
+    spec_path = eval_path.joinpath('spectrogram')
     os.makedirs(audio_path, exist_ok=True)
     os.makedirs(spec_path, exist_ok=True)
     
@@ -269,16 +271,19 @@ def _measure_audio_errors(dexed_dataset, eval_dataset, midi_notes, audio_path, s
         
         for midi_pitch, midi_velocity in midi_notes:  # Possible multi-note evaluation
             x_wav_original = eval_dataset.get_wav_file(preset_UID, midi_pitch, midi_velocity)  # Pre-rendered file
+            x_wav_original = x_wav_original / np.abs(x_wav_original + 1e-5).max()
+
             with utils.audio.suppress_output():
                 x_wav_inferred, Fs = dexed_dataset._render_audio(synth_params_inferred[idx], midi_pitch, midi_velocity)
                 num_samples = int(len(x_wav_inferred) * sampling_rate / Fs)
                 x_wav_inferred = resample(x_wav_inferred, num_samples)
+                x_wav_inferred = x_wav_inferred / np.abs(x_wav_inferred + 1e-5).max()
 
             # Save .wav files
             filename_gt = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}_gt.wav')
             filename_inferred = os.path.join(audio_path, f'{preset_UID}_p{midi_pitch}_v{midi_velocity}.wav')
-            soundfile.write(filename_gt, x_wav_original, sampling_rate)
-            soundfile.write(filename_inferred, x_wav_inferred, sampling_rate)
+            soundfile.write(filename_gt, x_wav_original, sampling_rate, subtype='FLOAT')
+            soundfile.write(filename_inferred, x_wav_inferred, sampling_rate, subtype='FLOAT')
             
             # Save log spectrogram figures
             similarity_eval = utils.audio.SimilarityEvaluator((x_wav_original, x_wav_inferred))

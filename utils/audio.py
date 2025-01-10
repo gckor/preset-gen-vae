@@ -11,6 +11,7 @@ from typing import Iterable, Sequence, Optional, List
 import pathlib
 import psutil
 
+import random
 import numpy as np
 import matplotlib.pyplot as plt
 import multiprocessing
@@ -23,6 +24,7 @@ import librosa
 import librosa.display
 import soundfile as sf
 from nnAudio.features import STFT
+from nnAudio.features.mel import MFCC
 
 
 class Spectrogram:
@@ -295,6 +297,10 @@ class AudioRenderer():
         self.midi_pitch = midi_pitch
         self.midi_velocity = midi_velocity
 
+    def single_process_render(self, full_preset_out: torch.Tensor):
+        wav = self._render_audio(full_preset_out)
+        return torch.FloatTensor(wav).to(self.device)
+
     def multi_process_render(self, full_preset_out: torch.Tensor):
         full_preset_out_split = np.array_split(full_preset_out, self.num_workers, axis=0)
         workers_data = []
@@ -344,6 +350,18 @@ class Spectrogram_Processor(nn.Module):
         self.alpha = alpha
         self.eps = eps
         self.stfts = nn.ModuleList()
+        self.mfcc13 = MFCC(
+            sr=sr,
+            n_mfcc=13,
+            n_fft=n_fft[0],
+            hop_length=hop_length[0],
+        )
+        self.mfcc40 = MFCC(
+            sr=sr,
+            n_mfcc=40,
+            n_fft=n_fft[0],
+            hop_length=hop_length[0],
+        )
 
         for i in range(len(n_fft)):
             stft = STFT(
@@ -382,6 +400,26 @@ class Spectrogram_Processor(nn.Module):
 
         return mae.unsqueeze(1)
     
+    def calculate_metrics(self, wav_1: torch.Tensor, wav_2: torch.Tensor):
+        bs = wav_1.shape[0]
+        wavs = torch.cat((wav_1, wav_2), dim=0)
+
+        mfcc13s = self.mfcc13(wavs)
+        mfcc40s = self.mfcc40(wavs)
+        mfcc13_mae = torch.abs(mfcc13s[:bs] - mfcc13s[bs:]).mean(dim=[1, 2])
+        mfcc40_mae = torch.abs(mfcc40s[:bs] - mfcc40s[bs:]).mean(dim=[1, 2])
+
+        for stft in self.stfts:
+            specs = stft(wavs)
+            specs = torch.clamp(specs, min=self.eps)
+            fro = torch.sqrt(torch.sum((specs[:bs] - specs[bs:]) ** 2, dim=[1, 2]))
+            fro_gt = torch.sqrt(torch.sum(specs[:bs] ** 2, dim=[1, 2]))
+            sc = torch.clamp(fro / fro_gt, max=5.0)
+            log_specs = torch.log10(specs)
+            log_mae = torch.abs(log_specs[:bs] - log_specs[bs:]).mean(dim=[1, 2])
+        
+        return sc, log_mae, mfcc13_mae, mfcc40_mae
+    
     def analyze_all_metrics(self, wav_1, wav_2):
         bs = wav_1.shape[0]
         metrics = dict()
@@ -397,7 +435,49 @@ class Spectrogram_Processor(nn.Module):
             metrics[f'log_mae_{stft.n_fft}'] = log_mae.item()
 
         return metrics
+    
 
+def spec_aug(specs, F=3, T=3, n_f_mask=10, n_t_mask=20):
+    batch_size, channels, num_freqs, time = specs.shape
+    specs = specs.clone()
+
+    for _ in range(n_f_mask):
+        f_sizes = torch.randint(0, F, (batch_size,))
+        f_starts = torch.randint(0, num_freqs, (batch_size,))
+        mask = torch.arange(num_freqs).unsqueeze(0).expand(batch_size, -1)
+        mask = (mask >= f_starts.unsqueeze(1)) & (mask < (f_starts + f_sizes).unsqueeze(1))
+        specs[mask.unsqueeze(1)] = 0
+
+    specs = specs.transpose(2, 3)
+
+    for _ in range(n_t_mask):
+        t_sizes = torch.randint(0, T, (batch_size,))
+        t_starts = torch.randint(0, time, (batch_size,))
+        mask = torch.arange(time).unsqueeze(0).expand(batch_size, -1)
+        mask = (mask >= t_starts.unsqueeze(1)) & (mask < (t_starts + t_sizes).unsqueeze(1))
+        specs[mask.unsqueeze(1)] = 0
+
+    specs = specs.transpose(2, 3)
+    return specs
+
+
+def time_mask(spec, T=40, n_mask=2):
+    audio_frames = spec.shape[1]
+    ts = np.random.randint(0, T, size=(n_mask, 2))
+    
+    for t, mask_end in ts:
+        if audio_frames - t <= 0:
+            continue
+
+        t_zero = random.randrange(0, audio_frames - t)
+
+        if t_zero == t_zero + t:
+            continue
+
+        mask_end += t_zero
+        spec[:, t_zero:mask_end] = 0
+
+    return spec
     
 
 def write_wav_and_mp3(base_path: pathlib.Path, base_name: str, samples, sr):

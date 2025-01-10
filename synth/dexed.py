@@ -255,13 +255,15 @@ class Dexed:
         audio_out = self.engine.get_audio_frames()
         audio = np.asarray(audio_out)
         fadeout_len = int(np.floor(self.Fs * self.fadeout_duration_s))
+        
         if fadeout_len > 1:  # fadeout might be disabled if too short
             fadeout = np.linspace(1.0, 0.0, fadeout_len)
             audio[-fadeout_len:] = audio[-fadeout_len:] * fadeout
-        if normalize:
-            return audio / np.abs(audio).max()
-        else:
-            return audio
+
+        if normalize and np.abs(audio).max() > 1e-4:
+            audio = audio / np.abs(audio).max()
+        
+        return audio
 
     def render_note_to_file(self, midi_note, midi_velocity, filename="./dexed_output.wav"):
         """ Renders a midi note (for the currently set patch), normalizes it and stores it

@@ -21,8 +21,10 @@ def get_dataset(dataset_name, config):
 
         config.synth_params_count = full_dataset.learnable_params_count
         config.learnable_params_tensor_length = full_dataset.preset_indexes_helper._learnable_preset_size
-    else:
+    elif dataset_name == 'surge':
         full_dataset = dataset.SurgeDataset(**config.dataset)
+    else:
+        full_dataset = dataset.NoisemakerDataset(**config.dataset)
         
     return full_dataset
 
@@ -46,7 +48,8 @@ def get_split_dataloaders(config, full_dataset):
         # mostly sfx: these hard to learn (or generate) item would have a much higher
         # equivalent learning rate because all losses are minibatch-size normalized.
         # No issue for eval though
-        drop_last = (k.lower() != 'test')
+        # drop_last = (k.lower() != 'test')
+        drop_last = True
 
         # Dataloaders based on previously built samplers
         dataloaders[k] = torch.utils.data.DataLoader(

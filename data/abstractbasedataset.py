@@ -8,7 +8,7 @@ from typing import Sequence
 import pandas as pd
 import json
 from datetime import datetime
-import multiprocessing
+from torchaudio import transforms as T
 from tqdm import tqdm
 
 import torch
@@ -78,7 +78,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         # spectrogram min/max/mean/std statistics: must be loaded after super() ctor (depend on child class args)
         self.spectrogram_normalization = spectrogram_normalization
         self.spec_stats = None
-        self.dataset_dir = pathlib.Path(dataset_dir).joinpath('dexed')
+        self.dataset_dir = pathlib.Path(dataset_dir).joinpath('dexed_normalized_newmel')
         self.dataset_name = dataset_name
         self.wav_files_dir = self.dataset_dir.joinpath('wav')
         self.spec_files_dir = self.dataset_dir.joinpath('spectrogram')
@@ -138,7 +138,7 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
             
             spectrogram = np.stack(spectrograms)
         
-        return waveform, spectrogram, synth_param, preset_UID
+        return waveform, spectrogram, synth_param, preset_UID, preset_index
 
     @property
     @abstractmethod
@@ -351,19 +351,27 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         elif self.spectrogram_normalization == 'mean_std':
             return spectrogram * self.spec_stats['std'] + self.spec_stats['mean']
 
-    # TODO un-mel method
     def compute_and_store_spectrograms_stats(self, write_sr):
         """ Compute min,max,mean,std on all presets previously rendered as wav files.
         Per-preset results are stored into a .csv file
         and dataset-wide averaged results are stored into a .json file
         This functions must be re-run when spectrogram parameters are changed. """
-        self.spectrogram = utils.audio.MelSpectrogram(
-            self.n_fft,
-            self.fft_hop,
-            self.spectrogram_min_dB,
-            self.n_mel_bins,
-            write_sr
+        # self.spectrogram = utils.audio.MelSpectrogram(
+        #     self.n_fft,
+        #     self.fft_hop,
+        #     self.spectrogram_min_dB,
+        #     self.n_mel_bins,
+        #     write_sr
+        # )
+
+        self.spectrogram = T.MelSpectrogram(
+            sample_rate=22050,
+            n_fft=1024,
+            win_length=1024,
+            hop_length=256,
+            norm='slaney',
         )
+
         t_start = datetime.now()
         os.makedirs(self.spec_files_dir, exist_ok=True)
         # MKL and/or PyTorch do not use hyper-threading, and it gives better results... don't use multi-proc here
@@ -396,8 +404,11 @@ class PresetDataset(torch.utils.data.Dataset, ABC):
         for i, args in tqdm(enumerate(worker_args), total=len(worker_args)):
             preset_UID, midi_pitch, midi_velocity = args[0]
             x_wav = self.get_wav_file(preset_UID, midi_pitch, midi_velocity)
-            # We use the exact same spectrogram as the dataloader will
-            tensor_spectrogram = self.spectrogram(x_wav)
+            # tensor_spectrogram = self.spectrogram(x_wav)
+
+            tensor_spectrogram = self.spectrogram(torch.FloatTensor(x_wav))
+            tensor_spectrogram = torch.clip(torch.log(tensor_spectrogram + 1e-5)/12., -1, 1)
+
             full_stats['UID'][i] = preset_UID
             full_stats['min'][i] = torch.min(tensor_spectrogram).item()
             full_stats['max'][i] = torch.max(tensor_spectrogram).item()

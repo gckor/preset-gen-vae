@@ -63,7 +63,10 @@ class SpectrogramDecoder(nn.Module):
                 self.mlp = nn.Sequential(nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape))),
                                          nn.Dropout(self.fc_dropout))
             else:
-                assert NotImplementedError()
+                self.cnn_input_shape = (self.mixer_1x1conv_ch, 2, 4)
+                # No ReLU (encoder-symmetry) (and leads to very bad generalization, but don't know why)
+                self.mlp = nn.Sequential(nn.Linear(self.dim_z, int(np.prod(self.cnn_input_shape))),
+                                         nn.Dropout(self.fc_dropout))
         else:
             raise NotImplementedError("Architecture '{}' not available".format(self.architecture))
 

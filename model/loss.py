@@ -685,34 +685,61 @@ class PresetProcessor:
         self.cat_softmax_t = cat_softmax_t
         self.cat_indexes = self.idx_helper.get_categorical_learnable_indexes()
 
-    def __call__(self, u_out: torch.Tensor):
+    def __call__(self, u_out: torch.Tensor, deterministic: bool = False):
         """ Categorical parameters must be one-hot encoded. """
         batch_size = u_out.shape[0]
-        full_presets = -0.1 * torch.ones((batch_size, self.idx_helper.full_preset_size))
-        mean_log_probs = torch.zeros((batch_size, 1), device=self.device)
+        n_params = self.idx_helper.full_preset_size
+        full_presets = -0.1 * torch.ones((batch_size, n_params))
+        full_actions = torch.zeros((batch_size, n_params), dtype=torch.int64, device=u_out.device)
 
         for vst_idx, learnable_indexes in enumerate(self.idx_helper.full_to_learnable):
             if self.idx_helper.vst_param_learnable_model[vst_idx] is None:
                 full_presets[:, vst_idx] = self.params_default_values[vst_idx] * torch.ones((batch_size, ))
             elif isinstance(learnable_indexes, Iterable):
-                logits = u_out[:, learnable_indexes]  # contains all q odds required for BCE or CCE
-                probs = torch.softmax(logits / self.cat_softmax_t, dim=1)
-                actions = torch.multinomial(probs, num_samples=1)
-                log_probs = torch.log(torch.gather(probs, 1, actions))
-                mean_log_probs += log_probs
+                with torch.no_grad():
+                    logits = u_out[:, learnable_indexes]  # contains all q odds required for BCE or CCE
+                    probs = torch.softmax(logits / self.cat_softmax_t, dim=1)
+                    if deterministic:
+                        actions = torch.argmax(probs, dim=-1)
+                    else:
+                        actions = torch.multinomial(probs, num_samples=1).squeeze()
                 n_classes = self.idx_helper.vst_param_cardinals[vst_idx]
-                full_presets[:, vst_idx] = actions.squeeze() / (n_classes - 1.0)
+                full_actions[:, vst_idx] = actions
+                full_presets[:, vst_idx] = actions / (n_classes - 1.0)
             else:
                 raise ValueError("Bad learnable indices for vst idx = {}".format(vst_idx))
 
-        mean_log_probs = mean_log_probs / len(self.cat_indexes)
-        return full_presets, mean_log_probs
-
-
-def calculate_rewards(spec_maes: torch.Tensor, threshold: Optional[float]):
-    spec_maes = 1 / torch.max(torch.ones_like(spec_maes) * 0.1, spec_maes)
-
-    if threshold is not None:
-        spec_maes[spec_maes < (1 / threshold)] = 0
+        return full_presets, full_actions
     
-    return 0.1 * spec_maes
+    def get_mean_log_probs(self, v_out, actions, importance_sampling=True):
+        batch_size = actions.shape[0]
+        mean_log_probs = torch.zeros((batch_size, 1), device=self.device)
+
+        for vst_idx, learnable_indexes in enumerate(self.idx_helper.full_to_learnable):
+            if isinstance(learnable_indexes, Iterable):
+                logits = v_out[:, learnable_indexes]
+                probs = torch.softmax(logits / self.cat_softmax_t, dim=1)
+                action_probs = torch.gather(probs, 1, actions[:, vst_idx].unsqueeze(1))
+                log_probs = torch.log(action_probs)
+                if importance_sampling:
+                    mean_log_probs += action_probs.detach() * log_probs
+                else:
+                    mean_log_probs += log_probs
+
+        mean_log_probs = mean_log_probs / len(self.cat_indexes)
+        return mean_log_probs
+
+
+def calculate_rewards(
+        sc: torch.Tensor,
+        log_mae: torch.Tensor,
+        mfcc_mae: torch.Tensor,
+        threshold: Optional[float] = None,
+        sc_coef: float = 0.5,
+        mfcc_coef: float = 0.03,
+    ):
+    
+    rewards = sc_coef * sc + (1 - sc_coef - mfcc_coef) * log_mae + mfcc_coef * mfcc_mae
+    rewards = (1 / torch.clamp(rewards, min=0.1, max=5.0) - threshold) * 10
+    
+    return rewards.unsqueeze(1)

@@ -6,14 +6,9 @@ TODO write doc
 
 import os
 import os.path
-import psutil
 from pathlib import Path
 from datetime import datetime
-from typing import Sequence
-import multiprocessing
 from omegaconf import OmegaConf
-from matplotlib import pyplot as plt
-from scipy.signal import resample
 
 import numpy as np
 import torch
@@ -125,7 +120,6 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
     eval_metrics = list()  # list of dicts
     preset_UIDs = list()
     synth_params_GT = list()
-    synth_params_inferred = list()
     eval_accuracies = list()
     eval_maes = list()
     # Parameters criteria
@@ -194,6 +188,7 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
         eval_metrics[-1]['spec_mae'] = log_mae.item()
         eval_metrics[-1]['mfcc13_mae'] = mfcc13_mae.item()
         eval_metrics[-1]['mfcc40_mae'] = mfcc40_mae.item()
+        preset_UIDs.append(preset_UID)
 
         if eval_config.dataset[0] == 'dexed':
             # Metrics
@@ -212,14 +207,9 @@ def evaluate_model(path_to_model_dir: Path, eval_config: utils.config.EvalConfig
             in_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_in, dataset=dexed_dataset)
             synth_params_GT.append(in_presets_instance.get_full()[0, :].cpu().numpy())
 
-        preset_UIDs.append(preset_UID)
-        out_presets_instance = data.preset.DexedPresetsParams(learnable_presets=v_out, dataset=dexed_dataset)
-        synth_params_inferred.append(out_presets_instance.get_full()[0, :].cpu().numpy())
-
     disp.stop()        
 
     # Numpy matrix of preset values. Reconstructed spectrograms are not stored
-    synth_params_inferred = np.asarray(synth_params_inferred)
     preset_UIDs = np.asarray(preset_UIDs)
 
     if eval_config.dataset[0] == 'dexed':

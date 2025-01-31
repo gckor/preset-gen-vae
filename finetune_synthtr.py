@@ -116,7 +116,8 @@ if __name__ == '__main__':
     scalars_train['Sched/LR'] = SimpleMetric(ft_config.optim.initial_lr)
 
     if ft_config.scheduler.load:
-        scheduler = ExponentialLR(optimizer, ft_config.scheduler.gamma)
+        # scheduler = ExponentialLR(optimizer, ft_config.scheduler.gamma)
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, eta_min=0.000001)
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     else:        
         scalars_train['Sched/LRwarmup'] = LinearDynamicParam(
@@ -157,15 +158,16 @@ if __name__ == '__main__':
 
         deterministic = False
 
-    buffer_path = model_path.joinpath('buffer0_sc_p5_x10', ft_config.train.dataset)
+    saved_buffer_path = model_path.joinpath('buffer', ft_config.train.dataset)
+    buffer_path = logger.log_dir.joinpath('buffer', ft_config.train.dataset)
+    os.makedirs(buffer_path, exist_ok=True)
     
     if ft_config.train.expl_epoch > 0:
-        os.makedirs(buffer_path, exist_ok=True)
         buffer.save(buffer_path)
     else:
-        buffer.load(buffer_path)
+        buffer.load(saved_buffer_path)
 
-    rewards_top = {'value': np.zeros(5), 'epoch': np.zeros(5, dtype=np.int16)}
+    rewards_top = {'value': np.zeros(10), 'epoch': np.zeros(10, dtype=np.int16)}
 
     # Train
     for epoch in tqdm(range(ft_config.train.start_epoch, ft_config.train.n_epochs), desc='epoch', position=0):
@@ -193,8 +195,11 @@ if __name__ == '__main__':
                 inferred_wavs = inferred_wavs / torch.abs(inferred_wavs + 1e-5).max(dim=1)[0].unsqueeze(1)
                 sc, log_mae, mfcc_mae, _ = spec_processor.calculate_metrics(x_wav, inferred_wavs)
                 rewards = calculate_rewards(sc, log_mae, mfcc_mae, ft_config.loss.pg_logp_threshold)
-                buffer.store(preset_UID, actions, rewards)
-                actions, rewards = buffer.sample(preset_UID)
+
+                if ft_config.loss.per:
+                    buffer.store(preset_UID, actions, rewards)
+                    actions, rewards = buffer.sample(preset_UID)
+                    
                 mean_log_probs = preset_processor.get_mean_log_probs(v_out, actions, importance_sampling=False)
                 pg_loss = -(rewards * mean_log_probs).mean()
                 
@@ -239,7 +244,7 @@ if __name__ == '__main__':
             for _, s in scalars_valid.items():
                 s.on_new_epoch()
             
-            for i, sample in tqdm(enumerate(dataloader['test']), desc='validation batch', position=1, total=len(dataloader['test']), leave=False):
+            for i, sample in tqdm(enumerate(dataloader['validation']), desc='validation batch', position=1, total=len(dataloader['validation']), leave=False):
                 x_wav, x_in, v_in = sample[0].to(device), sample[1].to(device), sample[2].to(device)
                 
                 with torch.no_grad():
@@ -267,17 +272,20 @@ if __name__ == '__main__':
 
             for k, s in scalars_valid.items():
                 logger.tensorboard.add_scalar(k, s.get(), epoch)
+
+            if scalars_valid['Specs/Rewards/Valid'].get() > rewards_top['value'].min():
+                update_idx = rewards_top['value'].argmin()
+                file_path = logger.checkpoints_dir.joinpath('{:05d}.tar'.format(rewards_top['epoch'][update_idx]))
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                rewards_top['value'][update_idx] = scalars_valid['Specs/Rewards/Valid'].get()
+                rewards_top['epoch'][update_idx] = epoch
+                logger.save_checkpoint(epoch, model, optimizer, scheduler)
+                buffer.save(buffer_path)
                 
-        # if (epoch > 0 and epoch % ft_config.train.save_period == 0) or (epoch == ft_config.train.n_epochs - 1):
-        #     logger.save_checkpoint(epoch, model, optimizer, scheduler)
-        if scalars_valid['Specs/Rewards/Valid'].get() > rewards_top['value'].min():
-            update_idx = rewards_top['value'].argmin()
-            file_path = logger.checkpoints_dir.joinpath('{:05d}.tar'.format(rewards_top['epoch'][update_idx]))
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            rewards_top['value'][update_idx] = scalars_valid['Specs/Rewards/Valid'].get()
-            rewards_top['epoch'][update_idx] = epoch
+        if epoch == ft_config.train.n_epochs - 1:
             logger.save_checkpoint(epoch, model, optimizer, scheduler)
+        
 
         logger.on_epoch_finished(epoch)
 

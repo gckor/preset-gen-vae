@@ -4,26 +4,26 @@ dataset:
   fft_hop: 256
   midi_notes: [[60, 85]]
   multichannel_stacked_spectrograms: False
-  n_mel_bins: 128 # 257
+  n_mel_bins: 257
   spectrogram_min_dB: -120.0
   algos: null
   operators: [1, 2, 3, 4, 5, 6]
-  vst_params_learned_as_categorical: all<=34 # all<=32 / all<=34, ...
+  vst_params_learned_as_categorical: all<=32
   restrict_to_labels: null
   dataset_dir: /data1/Music/synth_sound_match
-  dataset_name: num_as_25_cls # num_as_25_cls / numcatpp32
-  num_param_bins: 25 # -1 if no discretization of numerical params / 25
+  dataset_name: numcatpp32
+  num_param_bins: -1
 
 train:
   current_k_fold: 0
   k_folds: 5
   test_holdout_proportion: 0.2
-  minibatch_size: 32 # 32
+  minibatch_size: 160
   optimizer: AdamW
   start_epoch: 0
   n_epochs: 200
   eval_period: 10
-  save_period: 100
+  save_period: 50
   plot_period: 10
   weight_decay: 0.0001
   fc_dropout: 0.3
@@ -59,13 +59,13 @@ train:
   pg_nfft: [1024] # [2048, 1024, 512, 256, 128, 64]
   pg_hop: [256] # [512, 256, 128, 64, 32, 16]
   pg_logp_threshold: 0.8
-  params_label_smoothing: True
+  params_label_smoothing: False # True
   spec_aug: False
   spec_noise: False
   
 
 model:
-  name: dexed_normalized_newmel
+  name: dexed_257mel-pgvae
   run_name: kfold0-s3
   input_type: spectrogram
   stack_spectrograms: True
@@ -79,12 +79,12 @@ model:
   dim_z: 610
   params_reg_softmax: False
   params_regression_architecture: flow_realnvp_6l300 # mlp_4l1024 / flow_realnvp_6l300
-  latent_flow_arch: null # realnvp_6l300, null
+  latent_flow_arch: realnvp_6l300 # realnvp_6l300, null
   forward_controls_loss: True
   stochastic_latent: True # False
   latent_quantization: null
-  encoder_architecture: SynthTR # SpectrogramCNN / SynthTR
-  decoder_architecture: null # speccnn8l1_bn / null
+  encoder_architecture: SpectrogramCNN # SpectrogramCNN / SynthTR
+  decoder_architecture: speccnn8l1_bn # speccnn8l1_bn / null
   contrastive: False
   pretrained_dir: null
   encoder_kwargs: null

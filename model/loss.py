@@ -706,6 +706,8 @@ class PresetProcessor:
                 n_classes = self.idx_helper.vst_param_cardinals[vst_idx]
                 full_actions[:, vst_idx] = actions
                 full_presets[:, vst_idx] = actions / (n_classes - 1.0)
+            elif isinstance(learnable_indexes, int):
+                full_presets[:, vst_idx] = u_out[:, learnable_indexes]
             else:
                 raise ValueError("Bad learnable indices for vst idx = {}".format(vst_idx))
 

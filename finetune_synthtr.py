@@ -39,7 +39,7 @@ if __name__ == '__main__':
     model_parallel.train()
 
     # Replay buffer
-    buffer = Replaybuffer(len(ft_dataset), preset_idx_helper.full_preset_size, device)
+    buffer = Replaybuffer(len(ft_dataset), preset_idx_helper.full_preset_size, 4, device)
     
     # Parameter loss
     if ft_config.loss.param:
@@ -78,10 +78,7 @@ if __name__ == '__main__':
         )
     
     checkpoint = logger.get_model_last_checkpoint(logs_root_dir, config, device=device)
-    model.load_state_dict(checkpoint['ae_model_state_dict'])
-    
-    # if ft_config.train.start_epoch > 0:
-    #     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    model.load_state_dict(checkpoint['ae_model_state_dict'])        
 
     # Logger
     logger = logger.RunLogger(logs_root_dir, ft_config)
@@ -117,6 +114,7 @@ if __name__ == '__main__':
 
     if ft_config.scheduler.load:
         # scheduler = ExponentialLR(optimizer, ft_config.scheduler.gamma)
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, eta_min=0.000001)
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     else:        

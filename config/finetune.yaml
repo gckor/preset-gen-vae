@@ -3,17 +3,17 @@ verbosity: 1
 allow_erase_run: False
 
 train:
-  dataset: dexed
+  dataset: surge
   expl_epoch: 0
-  start_epoch: 199
-  n_epochs: 410
+  start_epoch: 381
+  n_epochs: 401
   save_period: 10
   eval_period: 10
 
 model:
-  name: dexed_normalized_newmel_cos_wo_per
-  run_name: kfold0-s3
-  saved_path: dexed_normalized_newmel/kfold0-s1
+  name: dexed_normalized_newmel_cos
+  run_name: kfold0-s3-rere
+  saved_path: dexed_normalized_newmel_cos/kfold0-s3-re
 
 optim:
   initial_lr: 0.00002
@@ -27,11 +27,11 @@ scheduler:
   load: False
 
 loss:
-  param: True
+  param: False
   normalize_losses: True
   cat_softmax_t: 0.2
   label_smoothing: True
-  per: False
+  per: True
   pg: True
   audio_eval_n_workers: 16
   pg_logp_threshold: 0

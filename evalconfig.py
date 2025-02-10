@@ -13,10 +13,10 @@ eval.start_datetime = datetime.datetime.now().isoformat()
 
 # Names must be include experiment folder and run name (_kf suffix must be omitted is all_k_folds is True)
 eval.models_names = [  # - - - 30k samples full dataset ('b' suffix means 'big') - - -
-                     '/data2/personal/swc/exp_logs/preset-gen-vae/surge_ft/kfold0-s1',
+                     '/data2/personal/swc/exp_logs/preset-gen-vae/surge_ft/kfold0-s3',
                     ]
 eval.dataset = ['surge', 'test'] # Do not use 'test' dataset during models development
-eval.ckp_epoch = 780
+eval.ckp_epoch = 800
 eval.override_previous_eval = True  # If True, all models be re-evaluated (might be very long)
 
 eval.minibatch_size = 1  # Reduced mini-batch size not to reserve too much GPU RAM. 1 <=> per-preset metrics
